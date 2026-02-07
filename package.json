@@ -1,7 +1,7 @@
 {
   "name": "novalyte-abm",
   "version": "1.0.0",
-  "description": "Account Based Marketing Platform for Novalyte AI - Target men's health clinics with keyword intelligence and AI voice outreach",
+  "description": "Novalyte AI Intelligence Engine — Enterprise-grade Account Based Marketing platform for men's health clinics with AI-powered pipeline intelligence, market analysis, and voice outreach",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,27 +9,30 @@
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "typecheck": "tsc --noEmit",
+    "test": "vitest",
     "scan:keywords": "npx tsx src/scripts/scanKeywords.ts",
     "discover:clinics": "npx tsx src/scripts/discoverClinics.ts",
     "sync:crm": "npx tsx src/scripts/syncCrm.ts"
   },
   "dependencies": {
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-router-dom": "^6.22.0",
-    "zustand": "^4.5.0",
+    "@supabase/supabase-js": "^2.95.3",
     "axios": "^1.6.7",
+    "clsx": "^2.1.0",
     "date-fns": "^3.3.1",
     "lucide-react": "^0.323.0",
-    "recharts": "^2.12.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
     "react-hot-toast": "^2.4.1",
-    "clsx": "^2.1.0",
-    "tailwind-merge": "^2.2.1"
+    "react-router-dom": "^6.22.0",
+    "recharts": "^2.12.0",
+    "tailwind-merge": "^2.2.1",
+    "zustand": "^4.5.0"
   },
   "devDependencies": {
+    "@types/google.maps": "^3.58.1",
+    "@types/node": "^20.11.17",
     "@types/react": "^18.2.55",
     "@types/react-dom": "^18.2.19",
-    "@types/node": "^20.11.17",
     "@typescript-eslint/eslint-plugin": "^7.0.1",
     "@typescript-eslint/parser": "^7.0.1",
     "@vitejs/plugin-react": "^4.2.1",
@@ -38,9 +41,11 @@
     "eslint-plugin-react-hooks": "^4.6.0",
     "eslint-plugin-react-refresh": "^0.4.5",
     "postcss": "^8.4.35",
+    "supabase": "^2.76.3",
     "tailwindcss": "^3.4.1",
     "tsx": "^4.7.1",
     "typescript": "^5.3.3",
-    "vite": "^5.1.0"
+    "vite": "^5.1.0",
+    "vitest": "^1.0.0"
   }
 }

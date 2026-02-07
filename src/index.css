@@ -5,55 +5,105 @@
 @layer base {
   html {
     font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
-  
+
   body {
-    @apply bg-gray-50 text-gray-900 antialiased;
+    @apply bg-slate-950 text-slate-100 antialiased;
   }
+
+  /* Dark scrollbar */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.15); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.3); }
+
+  /* Selection */
+  ::selection { background: rgba(54, 165, 255, 0.3); color: #fff; }
 }
 
 @layer components {
   .btn {
-    @apply inline-flex items-center justify-center px-4 py-2 rounded-lg font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none;
+    @apply inline-flex items-center justify-center px-4 py-2 rounded-lg font-medium
+           transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2
+           focus:ring-offset-slate-900 disabled:opacity-50 disabled:pointer-events-none text-sm;
   }
-  
+
   .btn-primary {
-    @apply bg-novalyte-600 text-white hover:bg-novalyte-700 focus:ring-novalyte-500;
+    @apply bg-novalyte-500 text-white hover:bg-novalyte-400 focus:ring-novalyte-500
+           shadow-lg shadow-novalyte-500/20 hover:shadow-novalyte-400/30;
   }
-  
+
   .btn-secondary {
-    @apply bg-gray-100 text-gray-900 hover:bg-gray-200 focus:ring-gray-500;
+    @apply bg-white/5 text-slate-300 border border-white/10 hover:bg-white/10
+           hover:text-white focus:ring-white/20;
   }
-  
+
   .btn-danger {
-    @apply bg-red-600 text-white hover:bg-red-700 focus:ring-red-500;
+    @apply bg-red-500/20 text-red-400 border border-red-500/20 hover:bg-red-500/30
+           focus:ring-red-500;
   }
-  
+
   .card {
-    @apply bg-white rounded-xl shadow-sm border border-gray-100;
+    @apply bg-slate-900/80 rounded-xl border border-white/[0.06] shadow-lg shadow-black/20;
   }
-  
+
+  .glass-card {
+    @apply bg-slate-900/60 backdrop-blur-xl rounded-xl border border-white/[0.06]
+           shadow-lg shadow-black/20;
+  }
+
   .input {
-    @apply w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-novalyte-500 focus:border-transparent;
+    @apply w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-slate-200
+           focus:outline-none focus:ring-2 focus:ring-novalyte-500/30 focus:border-novalyte-500/50
+           placeholder:text-slate-500 transition-all duration-200;
   }
-  
+
   .badge {
     @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
   }
-  
-  .badge-success {
-    @apply bg-green-100 text-green-800;
+
+  .badge-success { @apply bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/20; }
+  .badge-warning { @apply bg-amber-500/15 text-amber-400 ring-1 ring-amber-500/20; }
+  .badge-danger  { @apply bg-red-500/15 text-red-400 ring-1 ring-red-500/20; }
+  .badge-info    { @apply bg-novalyte-500/15 text-novalyte-300 ring-1 ring-novalyte-500/20; }
+}
+
+@layer utilities {
+  .text-gradient {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-novalyte-400 to-accent-400;
   }
-  
-  .badge-warning {
-    @apply bg-yellow-100 text-yellow-800;
+
+  .glow-novalyte { box-shadow: 0 0 30px rgba(54, 165, 255, 0.12), 0 0 60px rgba(54, 165, 255, 0.06); }
+  .glow-emerald  { box-shadow: 0 0 30px rgba(16, 185, 129, 0.12), 0 0 60px rgba(16, 185, 129, 0.06); }
+  .glow-accent   { box-shadow: 0 0 30px rgba(217, 70, 239, 0.12), 0 0 60px rgba(217, 70, 239, 0.06); }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
   }
-  
-  .badge-danger {
-    @apply bg-red-100 text-red-800;
+  .animate-fade-in { animation: fadeIn 0.3s ease-out; }
+
+  @keyframes slideInRight {
+    from { opacity: 0; transform: translateX(16px); }
+    to   { opacity: 1; transform: translateX(0); }
   }
-  
-  .badge-info {
-    @apply bg-blue-100 text-blue-800;
+  .animate-slide-in { animation: slideInRight 0.25s ease-out; }
+
+  @keyframes subtlePulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.5; }
+  }
+  .animate-subtle-pulse { animation: subtlePulse 2s ease-in-out infinite; }
+
+  @keyframes shimmer {
+    0%   { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+  .animate-shimmer {
+    background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.03) 50%, transparent 100%);
+    background-size: 200% 100%;
+    animation: shimmer 3s ease-in-out infinite;
   }
 }

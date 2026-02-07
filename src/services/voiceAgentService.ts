@@ -1,274 +1,353 @@
 import axios from 'axios';
 import { CRMContact, VoiceCall, CallStatus, CallOutcome } from '../types';
 
+/* ─── Vapi API Types ─── */
+
+interface VapiCallPayload {
+  assistantId: string;
+  phoneNumberId: string;
+  customer: { number: string; name?: string };
+  assistantOverrides?: {
+    firstMessage?: string;
+    variableValues?: Record<string, string>;
+    model?: {
+      provider: string;
+      model: string;
+      messages: { role: string; content: string }[];
+    };
+  };
+}
+
 interface VapiCallResponse {
   id: string;
+  orgId: string;
+  type: string;
   status: string;
+  phoneNumberId: string;
+  assistantId: string;
+  customer: { number: string; name?: string };
   createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
   endedAt?: string;
   transcript?: string;
   recordingUrl?: string;
+  summary?: string;
+  cost?: number;
+  costBreakdown?: Record<string, number>;
+  messages?: Array<{ role: string; message: string; time: number }>;
+  analysis?: {
+    summary?: string;
+    successEvaluation?: string;
+    structuredData?: Record<string, any>;
+  };
 }
 
-interface BlandAICallResponse {
-  call_id: string;
-  status: string;
-  call_length?: number;
-  transcript?: string;
-  recording_url?: string;
-}
+/* ─── Config ─── */
 
-// Default script template for men's health clinic outreach
-const DEFAULT_SCRIPT = `
-Hi, this is {{agent_name}} calling from Novalyte AI. 
-
-I'm reaching out to {{clinic_name}} because we've noticed strong growth in demand for {{service_area}} services in your area.
-
-We work with men's health clinics to help them grow their patient base through intelligent marketing and lead generation.
-
-Would {{decision_maker_name}} be available for a brief conversation about how we can help bring more patients to your clinic?
-
-[If available] Great! I'd love to schedule a quick 15-minute call to discuss how we've helped similar clinics increase their patient volume by 30-40%.
-
-[If not available] No problem. When would be a good time to reach them? I can also send over some information via email.
-
-[If not interested] I understand. Before I go, would it be helpful if I sent over a case study showing results from a similar clinic in your area?
-
-Thank you for your time!
-`;
+const VAPI_BASE = 'https://api.vapi.ai';
 
 export class VoiceAgentService {
-  private vapiApiKey: string;
-  private blandApiKey: string;
-  private agentId: string;
+  private apiKey: string;
+  private phoneNumberId: string;
+  private assistantId: string;
+  private phoneNumber: string;
 
-  constructor(vapiKey?: string, blandKey?: string) {
-    this.vapiApiKey = vapiKey || import.meta.env.VITE_VAPI_API_KEY || '';
-    this.blandApiKey = blandKey || import.meta.env.VITE_BLAND_AI_API_KEY || '';
-    this.agentId = 'novalyte-abm-agent';
+  constructor() {
+    this.apiKey = import.meta.env.VITE_VAPI_API_KEY || '';
+    this.phoneNumberId = import.meta.env.VITE_VAPI_PHONE_NUMBER_ID || '';
+    this.assistantId = import.meta.env.VITE_VAPI_ASSISTANT_ID || '';
+    this.phoneNumber = import.meta.env.VITE_VAPI_PHONE_NUMBER || '';
   }
 
-  /**
-   * Initiate a call to a CRM contact using Vapi
-   */
-  async initiateCallVapi(contact: CRMContact, script?: string): Promise<VoiceCall> {
-    const callScript = script || this.buildScript(contact);
+  get isConfigured(): boolean {
+    return !!(this.apiKey && this.phoneNumberId && this.assistantId);
+  }
 
-    try {
-      const response = await axios.post<VapiCallResponse>(
-        'https://api.vapi.ai/call/phone',
-        {
-          assistantId: this.agentId,
-          phoneNumberId: import.meta.env.VITE_VAPI_PHONE_NUMBER_ID,
-          customer: {
-            number: contact.clinic.phone,
-            name: contact.decisionMaker 
-              ? `${contact.decisionMaker.firstName} ${contact.decisionMaker.lastName}`
-              : contact.clinic.name,
-          },
-          assistantOverrides: {
-            firstMessage: callScript,
-            model: {
-              provider: 'openai',
-              model: 'gpt-4',
-              messages: [
-                {
-                  role: 'system',
-                  content: `You are a professional sales representative for Novalyte AI, calling men's health clinics. Be friendly, professional, and concise. Your goal is to schedule a demo or send information. The clinic is ${contact.clinic.name} in ${contact.clinic.address.city}.`,
-                },
-              ],
-            },
-          },
+  private get headers() {
+    return { Authorization: `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' };
+  }
+
+  /* ─── Outbound Call ─── */
+
+  async initiateCall(contact: CRMContact, customFirstMessage?: string): Promise<VoiceCall> {
+    if (!contact.clinic.phone) throw new Error('No phone number for this clinic');
+    if (!this.isConfigured) throw new Error('Vapi not configured — check API keys');
+
+    // Clean phone number — must be E.164
+    const phone = this.normalizePhone(contact.clinic.phone);
+    const dm = contact.decisionMaker;
+    const clinicName = contact.clinic.name;
+    const city = contact.clinic.address.city;
+    const services = contact.clinic.services.slice(0, 3).join(', ') || "men's health services";
+    const dmName = dm ? `${dm.firstName} ${dm.lastName}` : '';
+    const market = contact.clinic.marketZone;
+
+    // Build context-aware first message
+    const firstMessage = customFirstMessage || this.buildFirstMessage(contact);
+
+    // Build system prompt with full clinic context
+    const systemPrompt = this.buildSystemPrompt(contact);
+
+    const payload: VapiCallPayload = {
+      assistantId: this.assistantId,
+      phoneNumberId: this.phoneNumberId,
+      customer: {
+        number: phone,
+        name: dmName || clinicName,
+      },
+      assistantOverrides: {
+        firstMessage,
+        variableValues: {
+          clinic_name: clinicName,
+          decision_maker: dmName || 'the practice owner or manager',
+          city,
+          services,
+          market_income: `${(market.medianIncome / 1000).toFixed(0)}k`,
+          affluence_score: `${market.affluenceScore}/10`,
         },
-        {
-          headers: {
-            Authorization: `Bearer ${this.vapiApiKey}`,
-            'Content-Type': 'application/json',
-          },
-        }
-      );
-
-      return {
-        id: response.data.id,
-        contactId: contact.id,
-        agentId: this.agentId,
-        startTime: new Date(response.data.createdAt),
-        status: this.mapVapiStatus(response.data.status),
-        followUpRequired: false,
-      };
-    } catch (error) {
-      console.error(`Error initiating Vapi call to ${contact.clinic.name}:`, error);
-      throw error;
-    }
-  }
-
-  /**
-   * Initiate a call using Bland AI
-   */
-  async initiateCallBland(contact: CRMContact, script?: string): Promise<VoiceCall> {
-    const callScript = script || this.buildScript(contact);
-
-    try {
-      const response = await axios.post<BlandAICallResponse>(
-        'https://api.bland.ai/v1/calls',
-        {
-          phone_number: contact.clinic.phone,
-          task: callScript,
-          voice: 'maya', // Professional female voice
-          reduce_latency: true,
-          wait_for_greeting: true,
-          record: true,
-          max_duration: 300, // 5 minutes max
-          metadata: {
-            contact_id: contact.id,
-            clinic_name: contact.clinic.name,
-          },
+        model: {
+          provider: 'openai',
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'system', content: systemPrompt }],
         },
-        {
-          headers: {
-            Authorization: this.blandApiKey,
-            'Content-Type': 'application/json',
-          },
-        }
-      );
+      },
+    };
 
-      return {
-        id: response.data.call_id,
-        contactId: contact.id,
-        agentId: this.agentId,
-        startTime: new Date(),
-        status: 'queued',
-        followUpRequired: false,
-      };
-    } catch (error) {
-      console.error(`Error initiating Bland call to ${contact.clinic.name}:`, error);
-      throw error;
-    }
-  }
-
-  /**
-   * Get call status and details
-   */
-  async getCallStatus(callId: string, provider: 'vapi' | 'bland' = 'vapi'): Promise<Partial<VoiceCall>> {
-    try {
-      if (provider === 'vapi') {
-        const response = await axios.get<VapiCallResponse>(
-          `https://api.vapi.ai/call/${callId}`,
-          {
-            headers: {
-              Authorization: `Bearer ${this.vapiApiKey}`,
-            },
-          }
-        );
-
-        return {
-          status: this.mapVapiStatus(response.data.status),
-          endTime: response.data.endedAt ? new Date(response.data.endedAt) : undefined,
-          transcript: response.data.transcript,
-          recording_url: response.data.recordingUrl,
-        };
-      } else {
-        const response = await axios.get<BlandAICallResponse>(
-          `https://api.bland.ai/v1/calls/${callId}`,
-          {
-            headers: {
-              Authorization: this.blandApiKey,
-            },
-          }
-        );
-
-        return {
-          status: this.mapBlandStatus(response.data.status),
-          duration: response.data.call_length,
-          transcript: response.data.transcript,
-          recording_url: response.data.recording_url,
-        };
-      }
-    } catch (error) {
-      console.error(`Error getting call status for ${callId}:`, error);
-      throw error;
-    }
-  }
-
-  /**
-   * Analyze call transcript to determine outcome
-   */
-  analyzeCallOutcome(transcript: string): { outcome: CallOutcome; followUpRequired: boolean; sentiment: 'positive' | 'neutral' | 'negative' } {
-    const transcriptLower = transcript.toLowerCase();
-
-    // Check for positive outcomes
-    if (transcriptLower.includes('schedule') || transcriptLower.includes('demo') || transcriptLower.includes('meeting')) {
-      return { outcome: 'schedule_demo', followUpRequired: true, sentiment: 'positive' };
-    }
-    if (transcriptLower.includes('send') && (transcriptLower.includes('info') || transcriptLower.includes('email'))) {
-      return { outcome: 'send_info', followUpRequired: true, sentiment: 'positive' };
-    }
-    if (transcriptLower.includes('interested') && !transcriptLower.includes('not interested')) {
-      return { outcome: 'interested', followUpRequired: true, sentiment: 'positive' };
-    }
-    if (transcriptLower.includes('call back') || transcriptLower.includes('callback')) {
-      return { outcome: 'callback_requested', followUpRequired: true, sentiment: 'neutral' };
-    }
-
-    // Check for negative outcomes
-    if (transcriptLower.includes('not interested') || transcriptLower.includes('no thank')) {
-      return { outcome: 'not_interested', followUpRequired: false, sentiment: 'negative' };
-    }
-    if (transcriptLower.includes('wrong number') || transcriptLower.includes('wrong person')) {
-      return { outcome: 'wrong_contact', followUpRequired: false, sentiment: 'neutral' };
-    }
-
-    return { outcome: 'callback_requested', followUpRequired: true, sentiment: 'neutral' };
-  }
-
-  /**
-   * Build personalized call script
-   */
-  private buildScript(contact: CRMContact): string {
-    let script = DEFAULT_SCRIPT;
-
-    script = script.replace('{{agent_name}}', 'Sarah');
-    script = script.replace('{{clinic_name}}', contact.clinic.name);
-    script = script.replace(
-      '{{service_area}}',
-      contact.keywordMatches.length > 0 
-        ? contact.keywordMatches[0].keyword 
-        : "men's health"
-    );
-    script = script.replace(
-      '{{decision_maker_name}}',
-      contact.decisionMaker 
-        ? `${contact.decisionMaker.firstName} ${contact.decisionMaker.lastName}`
-        : 'the clinic owner or manager'
+    const response = await axios.post<VapiCallResponse>(
+      `${VAPI_BASE}/call/phone`,
+      payload,
+      { headers: this.headers }
     );
 
-    return script;
+    return {
+      id: response.data.id,
+      contactId: contact.id,
+      agentId: this.assistantId,
+      startTime: new Date(response.data.createdAt),
+      status: this.mapStatus(response.data.status),
+      followUpRequired: false,
+    };
   }
 
-  private mapVapiStatus(status: string): CallStatus {
-    const statusMap: Record<string, CallStatus> = {
-      'queued': 'queued',
-      'ringing': 'ringing',
-      'in-progress': 'in_progress',
-      'completed': 'completed',
-      'failed': 'failed',
-      'no-answer': 'no_answer',
-      'busy': 'no_answer',
+  /* ─── Manual Dial (any number) ─── */
+
+  async dialManualCall(phoneNumber: string, recipientName?: string): Promise<VoiceCall> {
+    if (!this.isConfigured) throw new Error('Vapi not configured — check API keys');
+    const phone = this.normalizePhone(phoneNumber);
+    if (phone.length < 10) throw new Error('Invalid phone number');
+
+    const firstMessage = recipientName
+      ? `Hi ${recipientName}, this is Sarah from Novalyte. How are you today?`
+      : `Hi, this is Sarah from Novalyte. How are you today?`;
+
+    const payload: VapiCallPayload = {
+      assistantId: this.assistantId,
+      phoneNumberId: this.phoneNumberId,
+      customer: { number: phone, name: recipientName || 'Manual Dial' },
+      assistantOverrides: { firstMessage },
     };
-    return statusMap[status] || 'queued';
+
+    const response = await axios.post<VapiCallResponse>(
+      `${VAPI_BASE}/call/phone`,
+      payload,
+      { headers: this.headers }
+    );
+
+    return {
+      id: response.data.id,
+      contactId: `manual-${Date.now()}`,
+      agentId: this.assistantId,
+      startTime: new Date(response.data.createdAt),
+      status: this.mapStatus(response.data.status),
+      followUpRequired: false,
+    };
   }
 
-  private mapBlandStatus(status: string): CallStatus {
-    const statusMap: Record<string, CallStatus> = {
-      'queued': 'queued',
-      'ringing': 'ringing',
-      'in-progress': 'in_progress',
-      'completed': 'completed',
-      'failed': 'failed',
-      'no-answer': 'no_answer',
-      'voicemail': 'voicemail',
+  /* ─── Test Connection ─── */
+
+  async testConnection(): Promise<{ ok: boolean; message: string; latencyMs: number; assistantName?: string }> {
+    const start = Date.now();
+    try {
+      const { data } = await axios.get(`${VAPI_BASE}/assistant/${this.assistantId}`, { headers: this.headers });
+      const latency = Date.now() - start;
+      return { ok: true, message: 'Connected to Vapi API', latencyMs: latency, assistantName: data.name || data.id };
+    } catch (err: any) {
+      const latency = Date.now() - start;
+      const msg = err.response?.status === 401 ? 'Invalid API key' :
+                  err.response?.status === 404 ? 'Assistant not found' :
+                  err.message || 'Connection failed';
+      return { ok: false, message: msg, latencyMs: latency };
+    }
+  }
+
+  /* ─── Config Getters (for UI display) ─── */
+
+  get config() {
+    return {
+      apiKey: this.apiKey ? `${this.apiKey.slice(0, 8)}...${this.apiKey.slice(-4)}` : '',
+      apiKeySet: !!this.apiKey,
+      phoneNumberId: this.phoneNumberId,
+      phoneNumberIdSet: !!this.phoneNumberId,
+      assistantId: this.assistantId,
+      assistantIdSet: !!this.assistantId,
+      phoneNumber: this.phoneNumber,
+      phoneNumberSet: !!this.phoneNumber,
     };
-    return statusMap[status] || 'queued';
+  }
+
+  /* ─── Get Call Details ─── */
+
+  async getCall(callId: string): Promise<VapiCallResponse> {
+    const { data } = await axios.get<VapiCallResponse>(
+      `${VAPI_BASE}/call/${callId}`,
+      { headers: this.headers }
+    );
+    return data;
+  }
+
+  /* ─── Poll Call Status ─── */
+
+  async getCallStatus(callId: string): Promise<Partial<VoiceCall>> {
+    const data = await this.getCall(callId);
+    return {
+      status: this.mapStatus(data.status),
+      endTime: data.endedAt ? new Date(data.endedAt) : undefined,
+      transcript: data.transcript,
+      recording_url: data.recordingUrl,
+      notes: data.analysis?.summary || data.summary,
+    };
+  }
+
+  /* ─── List Recent Calls ─── */
+
+  async listCalls(limit = 50): Promise<VapiCallResponse[]> {
+    const { data } = await axios.get<VapiCallResponse[]>(
+      `${VAPI_BASE}/call?limit=${limit}`,
+      { headers: this.headers }
+    );
+    return data;
+  }
+
+  /* ─── Analyze Transcript ─── */
+
+  analyzeCallOutcome(transcript: string): {
+    outcome: CallOutcome;
+    followUpRequired: boolean;
+    sentiment: 'positive' | 'neutral' | 'negative';
+    summary: string;
+  } {
+    const t = transcript.toLowerCase();
+
+    // Positive signals
+    if (t.includes('schedule') || t.includes('demo') || t.includes('meeting') || t.includes('appointment')) {
+      return { outcome: 'schedule_demo', followUpRequired: true, sentiment: 'positive', summary: 'Prospect agreed to schedule a meeting/demo' };
+    }
+    if ((t.includes('send') || t.includes('email')) && (t.includes('info') || t.includes('details') || t.includes('brochure'))) {
+      return { outcome: 'send_info', followUpRequired: true, sentiment: 'positive', summary: 'Prospect requested more information via email' };
+    }
+    if (t.includes('interested') && !t.includes('not interested') && !t.includes("aren't interested") && !t.includes("not really interested")) {
+      return { outcome: 'interested', followUpRequired: true, sentiment: 'positive', summary: 'Prospect expressed interest' };
+    }
+
+    // Neutral signals
+    if (t.includes('call back') || t.includes('callback') || t.includes('call again') || t.includes('try again') || t.includes('busy right now')) {
+      return { outcome: 'callback_requested', followUpRequired: true, sentiment: 'neutral', summary: 'Prospect requested a callback at a later time' };
+    }
+    if (t.includes('voicemail') || t.includes('leave a message') || t.includes('not available')) {
+      return { outcome: 'callback_requested', followUpRequired: true, sentiment: 'neutral', summary: 'Reached voicemail — follow up needed' };
+    }
+
+    // Negative signals
+    if (t.includes('not interested') || t.includes('no thank') || t.includes('don\'t call') || t.includes('remove') || t.includes('stop calling')) {
+      return { outcome: 'not_interested', followUpRequired: false, sentiment: 'negative', summary: 'Prospect declined — not interested' };
+    }
+    if (t.includes('wrong number') || t.includes('wrong person') || t.includes('no one by that name')) {
+      return { outcome: 'wrong_contact', followUpRequired: false, sentiment: 'neutral', summary: 'Wrong number or contact not found' };
+    }
+    if (t.includes('gatekeeper') || t.includes('receptionist') || t.includes('not available') || t.includes('in a meeting')) {
+      return { outcome: 'gatekeeper_block', followUpRequired: true, sentiment: 'neutral', summary: 'Blocked by gatekeeper — try again later' };
+    }
+
+    return { outcome: 'callback_requested', followUpRequired: true, sentiment: 'neutral', summary: 'Call completed — review transcript for details' };
+  }
+
+  /* ─── Script Builders ─── */
+
+  buildFirstMessage(contact: CRMContact): string {
+    const dm = contact.decisionMaker;
+    const clinic = contact.clinic;
+    const services = clinic.services.slice(0, 2).join(' and ') || "men's health services";
+    const city = clinic.address.city;
+
+    if (dm) {
+      return `Hi ${dm.firstName}, this is Sarah from Novalyte. I'm reaching out because I noticed ${clinic.name} offers ${services} in ${city}, and we've been helping clinics like yours capture more high-intent patients. Do you have a quick minute?`;
+    }
+    return `Hi, this is Sarah from Novalyte calling for ${clinic.name}. We help men's health clinics in ${city} grow their patient base through data-driven marketing. Could I speak with the practice owner or manager?`;
+  }
+
+  buildSystemPrompt(contact: CRMContact): string {
+    const c = contact.clinic;
+    const dm = contact.decisionMaker;
+    const market = c.marketZone;
+    const services = c.services.join(', ') || "men's health services";
+    const topKeyword = contact.keywordMatches?.[0];
+
+    return `You are Sarah, a professional and friendly sales representative for Novalyte AI. You are calling ${c.name}, a ${c.type.replace(/_/g, ' ')} in ${c.address.city}, ${c.address.state}.
+
+CLINIC CONTEXT:
+- Name: ${c.name}
+- Services: ${services}
+- Rating: ${c.rating ? `${c.rating}/5 (${c.reviewCount || 0} reviews)` : 'Unknown'}
+- Market: ${market.city}, ${market.state} (Affluence: ${market.affluenceScore}/10, Median Income: $${(market.medianIncome / 1000).toFixed(0)}k)
+${dm ? `- Decision Maker: ${dm.firstName} ${dm.lastName} (${dm.role.replace(/_/g, ' ')})` : '- Decision Maker: Unknown — ask for the owner or practice manager'}
+${topKeyword ? `- Trending keyword: "${topKeyword.keyword}" growing ${topKeyword.growthRate}% in their area` : ''}
+
+YOUR GOAL:
+1. Introduce yourself and Novalyte briefly
+2. Mention a specific data point about their market (keyword growth, affluence, demand)
+3. Ask if they'd be open to a 15-minute call to discuss how you can help
+4. If interested: schedule a follow-up or offer to send a market report
+5. If not interested: thank them and offer to send a case study
+
+RULES:
+- Be warm, professional, and concise — respect their time
+- Never be pushy or aggressive
+- If you reach a receptionist/gatekeeper, ask politely for the decision maker
+- If they say they're busy, offer to call back at a better time
+- Keep responses short — this is a phone call, not an email
+- Use natural conversational language, not scripted-sounding phrases
+- If asked about pricing, say you'd love to discuss that on a dedicated call
+- Maximum call duration target: 2-3 minutes for initial outreach`;
+  }
+
+  /* ─── Helpers ─── */
+
+  private normalizePhone(phone: string): string {
+    // Strip everything except digits and leading +
+    let cleaned = phone.replace(/[^\d+]/g, '');
+    // If it's 10 digits (US), prepend +1
+    if (/^\d{10}$/.test(cleaned)) cleaned = `+1${cleaned}`;
+    // If it starts with 1 and is 11 digits, prepend +
+    if (/^1\d{10}$/.test(cleaned)) cleaned = `+${cleaned}`;
+    // Ensure it starts with +
+    if (!cleaned.startsWith('+')) cleaned = `+${cleaned}`;
+    return cleaned;
+  }
+
+  private mapStatus(status: string): CallStatus {
+    const map: Record<string, CallStatus> = {
+      queued: 'queued',
+      ringing: 'ringing',
+      'in-progress': 'in_progress',
+      forwarding: 'in_progress',
+      ended: 'completed',
+      completed: 'completed',
+      failed: 'failed',
+      'no-answer': 'no_answer',
+      busy: 'no_answer',
+    };
+    return map[status] || 'queued';
   }
 }
 

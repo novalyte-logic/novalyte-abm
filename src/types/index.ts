@@ -84,6 +84,12 @@ export interface Clinic {
   yelpId?: string;
   rating?: number;
   reviewCount?: number;
+  // Optional cached manager / decision maker info
+  managerName?: string;
+  managerEmail?: string;
+  // Optional cached owner / director info
+  ownerName?: string;
+  ownerEmail?: string;
   services: string[];
   marketZone: MarketZone;
   discoveredAt: Date;
@@ -126,6 +132,7 @@ export type DecisionMakerRole =
 export type DataSource = 
   | 'apollo'
   | 'clearbit'
+  | 'npi'
   | 'linkedin'
   | 'manual'
   | 'website_scrape';
@@ -141,10 +148,20 @@ export interface CRMContact {
   tags: string[];
   notes: string;
   keywordMatches: KeywordTrend[];
+  activities: Activity[];
   createdAt: Date;
   updatedAt: Date;
   lastContactedAt?: Date;
   nextFollowUp?: Date;
+}
+
+// Activity log entry for CRM timeline
+export interface Activity {
+  id: string;
+  type: 'email_sent' | 'call_made' | 'call_scheduled' | 'note_added' | 'status_change' | 'follow_up_set' | 'enriched';
+  description: string;
+  timestamp: Date;
+  metadata?: Record<string, any>;
 }
 
 export type ContactStatus = 
