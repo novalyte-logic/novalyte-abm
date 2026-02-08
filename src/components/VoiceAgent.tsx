@@ -73,7 +73,7 @@ function getElapsed(start: Date): number {
 export default function VoiceAgent() {
   const {
     contacts, activeCalls, callHistory,
-    addCall, updateCall, completeCall,
+    addCall, updateCall, completeCall, clearStaleCalls,
     updateContact, updateContactStatus,
   } = useAppStore();
 
@@ -176,12 +176,28 @@ export default function VoiceAgent() {
     }
   }, [callingIds, addCall, updateContactStatus, updateContact]);
 
-  /* ─── Status Polling ─── */
+  /* ─── Status Polling (with max retries) ─── */
   const startPolling = useCallback((callId: string, contactId: string) => {
     if (pollRef.current.has(callId)) return;
+    let retries = 0;
+    const MAX_RETRIES = 60; // 60 × 5s = 5 minutes max polling
+    let consecutiveErrors = 0;
     const interval = setInterval(async () => {
+      retries++;
+      if (retries > MAX_RETRIES) {
+        // Timed out — auto-complete the call
+        clearInterval(interval);
+        pollRef.current.delete(callId);
+        completeCall(callId, {
+          status: 'completed',
+          notes: 'Auto-completed: polling timed out after 5 minutes',
+        });
+        toast('Call polling timed out — moved to history', { icon: '⏱️' });
+        return;
+      }
       try {
         const status = await voiceAgentService.getCallStatus(callId);
+        consecutiveErrors = 0;
         updateCall(callId, status);
         if (status.status === 'completed' || status.status === 'failed' || status.status === 'no_answer') {
           clearInterval(interval);
@@ -218,7 +234,19 @@ export default function VoiceAgent() {
           }
           toast.success(`Call to ${contacts.find(c => c.id === contactId)?.clinic.name || 'clinic'} completed`);
         }
-      } catch { /* keep polling */ }
+      } catch {
+        consecutiveErrors++;
+        if (consecutiveErrors >= 6) {
+          // 6 consecutive errors (30s) — give up
+          clearInterval(interval);
+          pollRef.current.delete(callId);
+          completeCall(callId, {
+            status: 'failed',
+            notes: 'Auto-failed: lost connection to Vapi API',
+          });
+          toast.error('Lost connection to Vapi — call moved to history');
+        }
+      }
     }, 5000);
     pollRef.current.set(callId, interval);
   }, [updateCall, completeCall, updateContactStatus, updateContact, contacts]);
@@ -333,7 +361,7 @@ export default function VoiceAgent() {
         />
       )}
       {tab === 'active' && (
-        <ActiveTab calls={activeCalls} contacts={contacts} tick={tick} onSelect={setSelectedCall} />
+        <ActiveTab calls={activeCalls} contacts={contacts} tick={tick} onSelect={setSelectedCall} onClearAll={clearStaleCalls} />
       )}
       {tab === 'history' && (
         <HistoryTab calls={callHistory} contacts={contacts} onSelect={setSelectedCall} />
@@ -860,8 +888,8 @@ function QueueTab({
    ACTIVE TAB — live calls with real-time status
    ═══════════════════════════════════════════════════════════════ */
 
-function ActiveTab({ calls, contacts, tick, onSelect }: {
-  calls: VoiceCall[]; contacts: CRMContact[]; tick: number; onSelect: (c: VoiceCall) => void;
+function ActiveTab({ calls, contacts, tick, onSelect, onClearAll }: {
+  calls: VoiceCall[]; contacts: CRMContact[]; tick: number; onSelect: (c: VoiceCall) => void; onClearAll: () => void;
 }) {
   if (calls.length === 0) {
     return (
@@ -874,6 +902,14 @@ function ActiveTab({ calls, contacts, tick, onSelect }: {
   }
   return (
     <div className="space-y-3">
+      {/* Clear All button for stuck/phantom calls */}
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-slate-500">{calls.length} active call{calls.length !== 1 ? 's' : ''}</p>
+        <button onClick={onClearAll}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/15 border border-red-500/20 transition-all">
+          <XCircle className="w-3.5 h-3.5" /> Clear All
+        </button>
+      </div>
       {calls.map(call => {
         const contact = contacts.find(c => c.id === call.contactId);
         const elapsed = getElapsed(call.startTime);

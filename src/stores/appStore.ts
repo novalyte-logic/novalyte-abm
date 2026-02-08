@@ -52,6 +52,7 @@ interface AppState {
   addCall: (call: VoiceCall) => void;
   updateCall: (id: string, updates: Partial<VoiceCall>) => void;
   completeCall: (id: string, updates: Partial<VoiceCall>) => void;
+  clearStaleCalls: () => void;
   setCampaigns: (campaigns: Campaign[]) => void;
   setActiveCampaign: (campaign: Campaign | null) => void;
   addSentEmails: (emails: SentEmail[]) => void;
@@ -265,6 +266,19 @@ const createPersistedStore = (persist as any)((set: any, get: any) => ({
     if (completed) bgSync(() => supabaseSync.syncVoiceCalls([completed]));
   },
 
+  clearStaleCalls: () => {
+    set((state: any) => {
+      if (!state.activeCalls.length) return state;
+      const moved = state.activeCalls.map((c: any) => ({
+        ...c, status: 'completed', notes: c.notes || 'Manually cleared from active calls',
+      }));
+      return {
+        activeCalls: [],
+        callHistory: [...state.callHistory, ...moved],
+      };
+    });
+  },
+
   setCampaigns: (campaigns: any) => {
     set({ campaigns });
     bgSync(() => supabaseSync.syncCampaigns(campaigns));
@@ -409,11 +423,31 @@ const createPersistedStore = (persist as any)((set: any, get: any) => ({
         }));
       }
       if (Array.isArray(state.activeCalls)) {
-        state.activeCalls = state.activeCalls.map((call: any) => ({
-          ...call,
-          startTime: call.startTime ? new Date(call.startTime) : new Date(),
-          endTime: call.endTime ? new Date(call.endTime) : undefined,
-        }));
+        // Clean up stale active calls — if a call has been "active" for more than 10 minutes,
+        // it's almost certainly done. Move it to history so it doesn't show as phantom active calls.
+        const TEN_MINUTES = 10 * 60 * 1000;
+        const now = Date.now();
+        const stale: any[] = [];
+        const stillActive: any[] = [];
+        for (const call of state.activeCalls) {
+          const start = call.startTime ? new Date(call.startTime).getTime() : 0;
+          const age = now - start;
+          const rehydrated = {
+            ...call,
+            startTime: call.startTime ? new Date(call.startTime) : new Date(),
+            endTime: call.endTime ? new Date(call.endTime) : undefined,
+          };
+          if (age > TEN_MINUTES) {
+            stale.push({ ...rehydrated, status: 'completed', notes: 'Auto-completed: stale after page reload' });
+          } else {
+            stillActive.push(rehydrated);
+          }
+        }
+        state.activeCalls = stillActive;
+        if (stale.length > 0) {
+          state.callHistory = [...(state.callHistory || []), ...stale];
+          console.info(`[Rehydrate] Moved ${stale.length} stale active call(s) to history`);
+        }
       }
       if (Array.isArray(state.callHistory)) {
         state.callHistory = state.callHistory.map((call: any) => ({
