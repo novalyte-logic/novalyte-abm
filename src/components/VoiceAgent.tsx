@@ -204,12 +204,8 @@ export default function VoiceAgent() {
           pollRef.current.delete(callId);
           const outcome = status.status === 'completed' && status.transcript
             ? voiceAgentService.analyzeCallOutcome(status.transcript) : undefined;
-          const duration = status.endTime
-            ? Math.round((new Date(status.endTime).getTime() - new Date().getTime()) / 1000 + getElapsed(new Date()))
-            : undefined;
           completeCall(callId, {
             ...status,
-            duration: duration && duration > 0 ? duration : undefined,
             outcome: outcome?.outcome, sentiment: outcome?.sentiment,
             followUpRequired: outcome?.followUpRequired ?? false,
             notes: outcome?.summary || status.notes,
@@ -254,13 +250,32 @@ export default function VoiceAgent() {
   /* ─── Batch Call ─── */
   const startBatchCall = useCallback(async () => {
     if (batchCalling || queue.length === 0) return;
+
+    // Validate batch readiness
+    const validation = voiceAgentService.validateBatchReady(queue);
+    if (validation.warnings.length > 0) {
+      for (const w of validation.warnings) toast(w, { icon: '⚠️' });
+    }
+    if (validation.ready.length === 0) {
+      toast.error('No contacts ready to call');
+      return;
+    }
+    if (validation.skipped.length > 0) {
+      toast(`Skipping ${validation.skipped.length} contacts (DNC, no phone, etc.)`, { icon: 'ℹ️' });
+    }
+
     setBatchCalling(true);
     batchRef.current = true;
     setTab('active');
-    for (let i = 0; i < queue.length; i++) {
+    const batch = validation.ready;
+    for (let i = 0; i < batch.length; i++) {
       if (!batchRef.current) break;
-      await initiateCall(queue[i]);
-      if (i < queue.length - 1 && batchRef.current) {
+      try {
+        await initiateCall(batch[i]);
+      } catch (err: any) {
+        toast.error(`${batch[i].clinic.name}: ${err.message}`);
+      }
+      if (i < batch.length - 1 && batchRef.current) {
         await new Promise(r => setTimeout(r, batchDelay * 1000));
       }
     }
