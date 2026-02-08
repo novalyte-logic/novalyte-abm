@@ -496,7 +496,7 @@ export class VoiceAgentService {
     const topService = clinic.services.find(s => /trt|testosterone|ed |erectile|weight|peptide|hormone/i.test(s)) || clinic.services[0] || "men's health";
 
     if (dm && dm.firstName) {
-      return `Hi, is this ${dm.firstName}? ... This is Kaizen from Novalyte. I'm calling because we have a few pre-qualified patients in ${city} looking for ${topService} services, and ${clinic.name} came up as a top match. Do you have capacity for a few more patients this week?`;
+      return `Hi ${dm.firstName}, this is Kaizen from Novalyte AI. I'm calling because we have a few pre-qualified patients in ${city} looking for ${topService} services, and ${clinic.name} came up as a top match. Do you have capacity for a few more patients this week?`;
     }
 
     return `Hi, this is Kaizen from Novalyte AI. We have pre-qualified patient referrals for men's health clinics in ${city}, and ${clinic.name} came up in our research as a strong fit. Could I speak with the practice owner or manager?`;
@@ -541,8 +541,12 @@ export class VoiceAgentService {
       '"There\'s no upfront cost to be listed. We operate on a partnership model — we send you patients, and we work out the details once you see the volume. The first few referrals are on us so you can see the quality."',
       '',
       'IF THEY\'RE INTERESTED:',
-      '"Great! Let me get your email address. We\'ll send you an email with the required information and next steps so we can set up the integration. I can also send over the patients we have waiting in your area this week."',
-      '— Capture their email address and repeat it back to confirm spelling.',
+      '"Great! I\'d love to send over the patient details and get you set up. What\'s the best email address to reach you at?"',
+      '— WAIT for them to give the email.',
+      '— Then spell it back letter by letter: "Just to make sure I have it right, that\'s J-A-M-I-L at example dot com, correct?"',
+      '— If they confirm, say: "Perfect, I\'ll send that over right away. You should have it in your inbox within the hour."',
+      '— If they correct you, repeat the corrected version letter by letter until confirmed.',
+      '— CAPTURING THE EMAIL IS THE SINGLE MOST IMPORTANT OUTCOME OF THIS CALL. Do not end the call without asking for it if they show any interest at all.',
       '',
       'IF THEY SAY "NOT INTERESTED" OR "NO THANKS":',
       '"I completely understand. If anything changes, we\'re here. Have a great day!"',
@@ -553,7 +557,9 @@ export class VoiceAgentService {
       '',
       'IF THEY SAY "SEND ME AN EMAIL":',
       '"Absolutely! What\'s the best email to reach you at?"',
-      '— Capture the email, repeat it back, confirm, then say you\'ll send it right over.',
+      '— Wait for the email address.',
+      '— Spell it back letter by letter: "Let me confirm — that\'s K-A-I-Z-E-N at clinic dot com?"',
+      '— Do NOT move on until the email is confirmed.',
       '',
       'IF THEY SAY "DON\'T CALL AGAIN" / "REMOVE ME":',
       '"I apologize for the inconvenience. I\'ll remove you from our list right away. Have a great day."',
@@ -573,7 +579,9 @@ export class VoiceAgentService {
       '- Mirror their energy — if they\'re rushed, be concise; if they\'re chatty, be warmer.',
       '- NEVER make up patient numbers or statistics. Keep it vague: "a few patients", "several inquiries".',
       '- Maximum call target: 2-3 minutes.',
-      '- If you capture an email address, ALWAYS repeat it back to confirm spelling.',
+      '- If you capture an email, ALWAYS spell it back letter by letter to confirm. This is non-negotiable.',
+      '- EMAIL CAPTURE IS YOUR #1 GOAL. If they show ANY interest, ask for their email before ending the call.',
+      '- Always say "Novalyte AI" — never just "Novalyte".',
       '- Your tone should convey: "I\'m offering you something valuable, not asking for anything."',
     ];
     return promptLines.filter(Boolean).join('\n');
