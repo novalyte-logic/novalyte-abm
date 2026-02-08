@@ -1,0 +1,91 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [main]
+
+env:
+  PROJECT_ID: warp-486714
+  REGION: us-central1
+  SERVICE: novalyte-abm
+  REPO: novalyte-abm
+  IMAGE: us-central1-docker.pkg.dev/warp-486714/novalyte-abm/app
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (Workload Identity)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SA_EMAIL }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Create Artifact Registry repo (if needed)
+        run: |
+          gcloud artifacts repositories describe ${{ env.REPO }} \
+            --location=${{ env.REGION }} 2>/dev/null || \
+          gcloud artifacts repositories create ${{ env.REPO }} \
+            --repository-format=docker \
+            --location=${{ env.REGION }} \
+            --description="Novalyte ABM Docker images"
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --build-arg VITE_GEMINI_API_KEY="${{ secrets.VITE_GEMINI_API_KEY }}" \
+            --build-arg VITE_GOOGLE_PLACES_API_KEY="${{ secrets.VITE_GOOGLE_PLACES_API_KEY }}" \
+            --build-arg VITE_EXA_API_KEY="${{ secrets.VITE_EXA_API_KEY }}" \
+            --build-arg VITE_REVENUEBASE_API_KEY="${{ secrets.VITE_REVENUEBASE_API_KEY }}" \
+            --build-arg VITE_SERPAPI_KEY="${{ secrets.VITE_SERPAPI_KEY }}" \
+            --build-arg VITE_GCP_PROJECT_ID="${{ secrets.VITE_GCP_PROJECT_ID }}" \
+            --build-arg VITE_GCP_LOCATION="${{ secrets.VITE_GCP_LOCATION }}" \
+            --build-arg VITE_VAPI_API_KEY="${{ secrets.VITE_VAPI_API_KEY }}" \
+            --build-arg VITE_VAPI_PUBLIC_KEY="${{ secrets.VITE_VAPI_PUBLIC_KEY }}" \
+            --build-arg VITE_VAPI_PHONE_NUMBER_ID="${{ secrets.VITE_VAPI_PHONE_NUMBER_ID }}" \
+            --build-arg VITE_VAPI_PHONE_NUMBER="${{ secrets.VITE_VAPI_PHONE_NUMBER }}" \
+            --build-arg VITE_VAPI_ASSISTANT_ID="${{ secrets.VITE_VAPI_ASSISTANT_ID }}" \
+            --build-arg VITE_SUPABASE_URL="${{ secrets.VITE_SUPABASE_URL }}" \
+            --build-arg VITE_SUPABASE_ANON_KEY="${{ secrets.VITE_SUPABASE_ANON_KEY }}" \
+            --build-arg VITE_SUPABASE_SERVICE_ROLE_KEY="${{ secrets.VITE_SUPABASE_SERVICE_ROLE_KEY }}" \
+            --build-arg VITE_RESEND_API_KEY="${{ secrets.VITE_RESEND_API_KEY }}" \
+            -t ${{ env.IMAGE }}:${{ github.sha }} \
+            -t ${{ env.IMAGE }}:latest \
+            .
+
+      - name: Push to Artifact Registry
+        run: |
+          docker push ${{ env.IMAGE }}:${{ github.sha }}
+          docker push ${{ env.IMAGE }}:latest
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE }} \
+            --image=${{ env.IMAGE }}:${{ github.sha }} \
+            --region=${{ env.REGION }} \
+            --platform=managed \
+            --port=8080 \
+            --allow-unauthenticated \
+            --memory=256Mi \
+            --cpu=1 \
+            --min-instances=0 \
+            --max-instances=3 \
+            --quiet
+
+      - name: Show URL
+        run: |
+          URL=$(gcloud run services describe ${{ env.SERVICE }} --region=${{ env.REGION }} --format='value(status.url)')
+          echo "🚀 Deployed to: $URL"
