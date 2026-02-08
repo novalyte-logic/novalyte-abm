@@ -333,8 +333,8 @@ function CRM() {
     <div className="flex flex-col h-full bg-slate-950 overflow-hidden">
 
       {/* ═══ Top Bar ═══ */}
-      <div className="bg-slate-900/80 border-b border-white/[0.06] px-6 py-4 shrink-0">
-        <div className="flex items-center justify-between mb-3">
+      <div className="bg-slate-900/80 border-b border-white/[0.06] px-4 sm:px-6 py-3 sm:py-4 shrink-0">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-0 mb-3">
           <div>
             <h1 className="text-xl font-semibold text-white tracking-tight">Pipeline</h1>
             <p className="text-xs text-slate-500 mt-0.5">{filtered.length} accounts across {regions.length} region{regions.length !== 1 ? 's' : ''}</p>
@@ -356,8 +356,8 @@ function CRM() {
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="relative flex-1 max-w-md">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
+          <div className="relative flex-1 sm:max-w-md">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
             <input type="text" placeholder="Search name, city, email..." value={search} onChange={e => setSearch(e.target.value)}
               className="w-full pl-10 pr-4 py-2 bg-white/5 border border-white/[0.06] rounded-lg text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-novalyte-500/20 focus:border-novalyte-500/30" />
@@ -432,7 +432,8 @@ function CRM() {
 
                     {/* Contacts table within region */}
                     {!isCollapsed && (
-                      <table className="w-full text-sm">
+                      <div className="overflow-x-auto">
+                      <table className="w-full text-sm min-w-[640px]">
                         <tbody className="divide-y divide-white/[0.04]">
                           {region.contacts.map(contact => {
                             const dm = contact.decisionMaker;
@@ -490,6 +491,7 @@ function CRM() {
                           })}
                         </tbody>
                       </table>
+                      </div>
                     )}
                   </div>
                 );
@@ -505,7 +507,7 @@ function CRM() {
         </div>
 
         {/* ── Slide-over Drawer ── */}
-        <div className={cn('shrink-0 bg-slate-900 border-l border-white/[0.06] flex flex-col overflow-hidden transition-all duration-300 ease-in-out', drawerOpen ? 'w-[480px] opacity-100' : 'w-0 opacity-0')}>
+        <div className={cn('shrink-0 bg-slate-900 border-l border-white/[0.06] flex flex-col overflow-hidden transition-all duration-300 ease-in-out', drawerOpen ? 'w-full sm:w-[480px] fixed sm:relative inset-0 sm:inset-auto z-40 sm:z-auto opacity-100' : 'w-0 opacity-0')}>
           {selectedContact && (
             <>
               {/* Drawer Header */}

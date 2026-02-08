@@ -74,28 +74,28 @@ function Dashboard() {
   };
 
   return (
-    <div className="p-6 lg:p-8 space-y-6 max-w-[1600px] mx-auto">
+    <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 max-w-[1600px] mx-auto">
 
       {/* Header */}
-      <div className="flex items-end justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
         <div>
-          <div className="flex items-center gap-3 mb-1">
-            <h1 className="text-2xl font-bold text-white tracking-tight">Command Center</h1>
+          <div className="flex items-center gap-2 sm:gap-3 mb-1 flex-wrap">
+            <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">Command Center</h1>
             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold bg-gradient-to-r from-novalyte-500 to-accent-500 text-white shadow-lg shadow-novalyte-500/20">
               <Brain className="w-3 h-3" /> AI-Powered
             </span>
           </div>
-          <p className="text-sm text-slate-500">Real-time pipeline analytics and AI-driven intelligence</p>
+          <p className="text-xs sm:text-sm text-slate-500">Real-time pipeline analytics and AI-driven intelligence</p>
         </div>
         <button onClick={refreshInsights} disabled={isLoadingInsights}
-          className="btn btn-secondary text-xs">
+          className="btn btn-secondary text-xs self-start sm:self-auto">
           <RefreshCw className={cn('w-3.5 h-3.5 mr-2', isLoadingInsights && 'animate-spin')} />
           Refresh
         </button>
       </div>
 
       {/* Pipeline Health + Metrics */}
-      <div className="grid grid-cols-12 gap-4">
+      <div className="grid grid-cols-12 gap-3 sm:gap-4">
         {/* Pipeline Health */}
         <div className="col-span-12 lg:col-span-4 glass-card p-5 relative overflow-hidden">
           <div className="absolute top-0 right-0 w-40 h-40 bg-gradient-to-bl from-novalyte-500/8 to-transparent rounded-bl-full pointer-events-none" />

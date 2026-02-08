@@ -94,11 +94,11 @@ export default function EmailOutreach() {
   }, [refreshing, sentEmails, updateSentEmails]);
 
   return (
-    <div className="space-y-6 animate-fade-in p-6">
+    <div className="space-y-4 sm:space-y-6 animate-fade-in p-4 sm:p-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-slate-100">Email Outreach</h1>
+          <h1 className="text-xl sm:text-2xl font-bold text-slate-100">Email Outreach</h1>
           <p className="text-sm text-slate-400 mt-1">
             AI-powered email campaigns — {stats.remaining} sends remaining today
           </p>
@@ -141,10 +141,10 @@ export default function EmailOutreach() {
       </div>
 
       {/* Tabs */}
-      <div className="flex items-center gap-1 p-1 bg-white/[0.03] rounded-lg border border-white/[0.06] w-fit">
+      <div className="flex items-center gap-1 p-1 bg-white/[0.03] rounded-lg border border-white/[0.06] overflow-x-auto scrollbar-hide sm:w-fit">
         {(['compose', 'sequences', 'stream', 'analytics'] as Tab[]).map(t => (
           <button key={t} onClick={() => setTab(t)} className={cn(
-            'px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center gap-2',
+            'px-3 sm:px-4 py-2 rounded-md text-xs sm:text-sm font-medium transition-all flex items-center gap-1.5 sm:gap-2 whitespace-nowrap shrink-0',
             tab === t ? 'bg-novalyte-500/20 text-novalyte-300' : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.03]'
           )}>
             {t === 'compose' && <Sparkles className="w-4 h-4" />}
@@ -760,7 +760,8 @@ function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEm
             <p className="text-xs text-slate-500 mt-1">Send emails from the Compose tab to start sequences</p>
           </div>
         ) : (
-          <table className="w-full">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[600px]">
             <thead>
               <tr className="border-b border-white/[0.06]">
                 <th className="text-left text-xs text-slate-500 font-medium px-4 py-3">Step</th>
@@ -817,11 +818,13 @@ function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEm
               })}
             </tbody>
           </table>
+          </div>
         )}
       </div>
     </div>
   );
 }
+
 
 
 /* ═══════════════════════════════════════════════════════════════
@@ -858,7 +861,8 @@ function StreamTab({ emails, onRefresh, refreshing }: {
       </div>
 
       <div className="glass-card overflow-hidden">
-        <table className="w-full">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[600px]">
           <thead>
             <tr className="border-b border-white/[0.06]">
               <th className="text-left text-xs text-slate-500 font-medium px-4 py-3">Status</th>
@@ -904,6 +908,7 @@ function StreamTab({ emails, onRefresh, refreshing }: {
             })}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );

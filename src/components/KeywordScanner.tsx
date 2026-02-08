@@ -162,10 +162,10 @@ function KeywordScanner() {
   const clinicsInMarket = (marketId: string) => clinics.filter(c => c.marketZone.id === marketId).length;
 
   return (
-    <div className="p-8">
+    <div className="p-4 sm:p-6 lg:p-8">
       {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-white">Keyword Scanner</h1>
+      <div className="mb-4 sm:mb-8">
+        <h1 className="text-xl sm:text-2xl font-bold text-white">Keyword Scanner</h1>
         <p className="text-slate-500">Track spiking men's health keywords — click any row to take action</p>
       </div>
 
@@ -378,7 +378,7 @@ function KeywordScanner() {
 
       {/* ─── Detail Drawer ─── */}
       {selectedTrend && (
-        <div className="fixed inset-y-0 right-0 w-[420px] bg-slate-900 shadow-2xl border-l border-white/[0.06] z-50 flex flex-col">
+        <div className="fixed inset-y-0 right-0 w-full sm:w-[420px] bg-slate-900 shadow-2xl border-l border-white/[0.06] z-50 flex flex-col">
           {/* Drawer header */}
           <div className="p-5 border-b border-white/[0.06] flex items-start justify-between">
             <div>

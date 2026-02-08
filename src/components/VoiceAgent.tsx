@@ -257,16 +257,16 @@ export default function VoiceAgent() {
   ];
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="p-4 sm:p-6 space-y-4 sm:space-y-6 animate-fade-in">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-slate-100">Voice Agent</h1>
-          <p className="text-sm text-slate-400 mt-1">AI-powered outbound calling — click a clinic to open controls</p>
+          <h1 className="text-xl sm:text-2xl font-bold text-slate-100">Voice Agent</h1>
+          <p className="text-xs sm:text-sm text-slate-400 mt-1">AI-powered outbound calling — tap a clinic to open controls</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
           {batchCalling && (
-            <button onClick={stopBatch} className="btn btn-danger gap-2">
+            <button onClick={stopBatch} className="btn btn-danger gap-2 text-xs sm:text-sm">
               <Pause className="w-4 h-4" /> Stop Batch
             </button>
           )}
@@ -275,13 +275,13 @@ export default function VoiceAgent() {
             isConfigured ? 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20' : 'bg-red-500/10 text-red-400 ring-1 ring-red-500/20'
           )}>
             <Radio className={cn('w-3 h-3', isConfigured && 'animate-subtle-pulse')} />
-            {isConfigured ? 'Vapi Connected' : 'Vapi Not Configured'}
+            {isConfigured ? 'Vapi Connected' : 'Not Configured'}
           </div>
         </div>
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className="flex gap-3 overflow-x-auto pb-1 -mx-4 px-4 sm:mx-0 sm:px-0 sm:grid sm:grid-cols-3 lg:grid-cols-6 scrollbar-hide">
         {[
           { label: 'Calls Today', value: stats.totalToday, icon: Phone, color: 'text-novalyte-400' },
           { label: 'Connected', value: stats.connected, icon: PhoneCall, color: 'text-emerald-400' },
@@ -290,7 +290,7 @@ export default function VoiceAgent() {
           { label: 'Success Rate', value: stats.successRate ? `${stats.successRate}%` : '—', icon: TrendingUp, color: 'text-emerald-400' },
           { label: 'Active Now', value: stats.active, icon: Activity, color: stats.active > 0 ? 'text-green-400' : 'text-slate-500' },
         ].map(s => (
-          <div key={s.label} className="glass-card p-3">
+          <div key={s.label} className="glass-card p-3 min-w-[130px] sm:min-w-0 shrink-0 sm:shrink">
             <div className="flex items-center gap-2 mb-1">
               <s.icon className={cn('w-4 h-4', s.color)} />
               <span className="text-xs text-slate-500">{s.label}</span>
@@ -301,10 +301,10 @@ export default function VoiceAgent() {
       </div>
 
       {/* Tabs */}
-      <div className="flex items-center gap-1 p-1 bg-white/[0.03] rounded-lg border border-white/[0.06] w-fit">
+      <div className="flex items-center gap-1 p-1 bg-white/[0.03] rounded-lg border border-white/[0.06] overflow-x-auto scrollbar-hide -mx-4 px-4 sm:mx-0 sm:px-1 sm:w-fit">
         {tabMeta.map(({ id, label, icon: Icon }) => (
           <button key={id} onClick={() => setTab(id)} className={cn(
-            'px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center gap-2',
+            'px-3 sm:px-4 py-2 rounded-md text-xs sm:text-sm font-medium transition-all flex items-center gap-1.5 sm:gap-2 whitespace-nowrap shrink-0',
             tab === id ? 'bg-novalyte-500/20 text-novalyte-300' : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.03]'
           )}>
             <Icon className="w-4 h-4" />
@@ -938,7 +938,8 @@ function HistoryTab({ calls, contacts, onSelect }: {
   }
   return (
     <div className="glass-card overflow-hidden">
-      <table className="w-full">
+      <div className="overflow-x-auto">
+      <table className="w-full min-w-[640px]">
         <thead>
           <tr className="border-b border-white/[0.06]">
             <th className="text-left text-xs text-slate-500 font-medium px-4 py-3">Clinic</th>
@@ -988,6 +989,7 @@ function HistoryTab({ calls, contacts, onSelect }: {
           })}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }

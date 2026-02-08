@@ -75,6 +75,19 @@
     @apply bg-clip-text text-transparent bg-gradient-to-r from-novalyte-400 to-accent-400;
   }
 
+  /* Safe area insets for notched / pill-shaped phones (Pixel 10 Pro, iPhone) */
+  .safe-top { padding-top: env(safe-area-inset-top, 0px); }
+  .safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
+  .safe-left { padding-left: env(safe-area-inset-left, 0px); }
+  .safe-right { padding-right: env(safe-area-inset-right, 0px); }
+
+  /* Touch-friendly minimum tap targets */
+  .touch-target { min-height: 44px; min-width: 44px; }
+
+  /* Hide scrollbar for horizontal scroll containers on mobile */
+  .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+  .scrollbar-hide::-webkit-scrollbar { display: none; }
+
   .glow-novalyte { box-shadow: 0 0 30px rgba(54, 165, 255, 0.12), 0 0 60px rgba(54, 165, 255, 0.06); }
   .glow-emerald  { box-shadow: 0 0 30px rgba(16, 185, 129, 0.12), 0 0 60px rgba(16, 185, 129, 0.06); }
   .glow-accent   { box-shadow: 0 0 30px rgba(217, 70, 239, 0.12), 0 0 60px rgba(217, 70, 239, 0.06); }

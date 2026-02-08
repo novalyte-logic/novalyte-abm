@@ -3,6 +3,7 @@ import {
   LayoutDashboard, TrendingUp, Building2, Users, Phone,
   Settings, Cloud, CloudOff, RefreshCw, Brain, ChevronLeft,
   ChevronRight, DownloadCloud, Trash2, Sparkles, Mail, DollarSign,
+  Menu, X,
 } from 'lucide-react';
 import { useAppStore } from './stores/appStore';
 import { cn } from './utils/cn';
@@ -15,13 +16,13 @@ import EmailOutreach from './components/EmailOutreach';
 import RevenueForecastPage from './components/RevenueForecast';
 
 const navItems = [
-  { id: 'dashboard', label: 'Command Center', icon: LayoutDashboard, badge: null },
-  { id: 'keywords', label: 'Keyword Scanner', icon: TrendingUp, badge: 'trends' },
-  { id: 'clinics', label: 'Clinic Discovery', icon: Building2, badge: 'clinics' },
-  { id: 'crm', label: 'Pipeline CRM', icon: Users, badge: 'contacts' },
-  { id: 'voice', label: 'Voice Agent', icon: Phone, badge: 'calls' },
-  { id: 'email', label: 'Email Outreach', icon: Mail, badge: 'emails' },
-  { id: 'forecast', label: 'Revenue Forecast', icon: DollarSign, badge: null },
+  { id: 'dashboard', label: 'Command Center', shortLabel: 'Home', icon: LayoutDashboard, badge: null },
+  { id: 'keywords', label: 'Keyword Scanner', shortLabel: 'Keywords', icon: TrendingUp, badge: 'trends' },
+  { id: 'clinics', label: 'Clinic Discovery', shortLabel: 'Clinics', icon: Building2, badge: 'clinics' },
+  { id: 'crm', label: 'Pipeline CRM', shortLabel: 'CRM', icon: Users, badge: 'contacts' },
+  { id: 'voice', label: 'Voice Agent', shortLabel: 'Voice', icon: Phone, badge: 'calls' },
+  { id: 'email', label: 'Email Outreach', shortLabel: 'Email', icon: Mail, badge: 'emails' },
+  { id: 'forecast', label: 'Revenue Forecast', shortLabel: 'Revenue', icon: DollarSign, badge: null },
 ] as const;
 
 function App() {
@@ -32,6 +33,7 @@ function App() {
 
   const [collapsed, setCollapsed] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => { initSupabase(); }, [initSupabase]);
 
@@ -82,11 +84,83 @@ function App() {
     window.location.reload();
   };
 
+  const handleMobileNav = (id: string) => {
+    setCurrentView(id as typeof currentView);
+    setMobileMenuOpen(false);
+  };
+
   return (
     <div className="flex h-screen bg-slate-950">
-      {/* ═══ Sidebar ═══ */}
+
+      {/* ═══ Mobile Top Bar — visible < lg ═══ */}
+      <div className="lg:hidden fixed top-0 left-0 right-0 z-50 bg-slate-950/95 backdrop-blur-xl border-b border-white/[0.06] px-4 py-3 flex items-center justify-between safe-top">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 bg-gradient-to-br from-novalyte-400 via-novalyte-500 to-accent-500 rounded-lg flex items-center justify-center text-xs font-black shadow-lg shadow-novalyte-500/20">
+            N
+          </div>
+          <div>
+            <h1 className="text-sm font-bold text-slate-100">Novalyte</h1>
+            <p className="text-[9px] text-slate-500">AI Intelligence Engine</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => pushToSupabase()}
+            disabled={!supabaseReady || isSyncing}
+            className="p-2 rounded-lg hover:bg-white/5"
+          >
+            {isSyncing ? <RefreshCw className="w-4 h-4 text-emerald-400 animate-spin" /> :
+             supabaseReady ? <Cloud className="w-4 h-4 text-emerald-400" /> :
+             <CloudOff className="w-4 h-4 text-slate-600" />}
+          </button>
+          <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="p-2 rounded-lg hover:bg-white/5">
+            {mobileMenuOpen ? <X className="w-5 h-5 text-slate-300" /> : <Menu className="w-5 h-5 text-slate-300" />}
+          </button>
+        </div>
+      </div>
+
+      {/* ═══ Mobile Slide-Down Menu ═══ */}
+      {mobileMenuOpen && (
+        <div className="lg:hidden fixed inset-0 z-40 pt-[60px]">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setMobileMenuOpen(false)} />
+          <div className="relative bg-slate-900/98 backdrop-blur-xl border-b border-white/[0.06] shadow-2xl animate-fade-in max-h-[70vh] overflow-y-auto">
+            <div className="p-3 space-y-0.5">
+              {navItems.map(item => {
+                const Icon = item.icon;
+                const isActive = currentView === item.id;
+                const count = getBadgeCount(item.badge);
+                return (
+                  <button key={item.id} onClick={() => handleMobileNav(item.id)}
+                    className={cn(
+                      'w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all',
+                      isActive ? 'bg-novalyte-500/15 text-novalyte-300' : 'text-slate-400 active:bg-white/5'
+                    )}>
+                    <Icon className={cn('w-5 h-5', isActive && 'text-novalyte-400')} />
+                    <span className="flex-1 text-left">{item.label}</span>
+                    {count !== null && (
+                      <span className={cn('text-[10px] tabular-nums px-2 py-0.5 rounded-full font-semibold',
+                        isActive ? 'bg-novalyte-500/30 text-novalyte-300' : 'bg-white/5 text-slate-500'
+                      )}>{count}</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="border-t border-white/[0.06] p-3 flex gap-2">
+              <button onClick={handleExport} className="flex-1 btn btn-secondary gap-2 text-xs justify-center">
+                <DownloadCloud className="w-3.5 h-3.5" /> Export
+              </button>
+              <button onClick={handleClear} className="flex-1 btn btn-danger gap-2 text-xs justify-center">
+                <Trash2 className="w-3.5 h-3.5" /> Clear Data
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ Desktop Sidebar — hidden < lg ═══ */}
       <aside className={cn(
-        'bg-slate-950 text-white flex flex-col transition-all duration-300 ease-in-out shrink-0',
+        'hidden lg:flex bg-slate-950 text-white flex-col transition-all duration-300 ease-in-out shrink-0',
         collapsed ? 'w-[68px]' : 'w-[240px]'
       )}>
         {/* Logo */}
@@ -223,9 +297,47 @@ function App() {
       </aside>
 
       {/* ═══ Main Content ═══ */}
-      <main className="flex-1 overflow-auto">
+      <main className="flex-1 overflow-auto pt-[60px] pb-[72px] lg:pt-0 lg:pb-0">
         {renderView()}
       </main>
+
+      {/* ═══ Mobile Bottom Nav — visible < lg ═══ */}
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-slate-950/95 backdrop-blur-xl border-t border-white/[0.06] safe-bottom">
+        <div className="flex items-center justify-around px-1 py-1">
+          {navItems.slice(0, 5).map(item => {
+            const Icon = item.icon;
+            const isActive = currentView === item.id;
+            const count = getBadgeCount(item.badge);
+            return (
+              <button key={item.id} onClick={() => setCurrentView(item.id)}
+                className={cn(
+                  'flex flex-col items-center gap-0.5 py-1.5 px-2 rounded-lg min-w-0 flex-1 transition-all relative',
+                  isActive ? 'text-novalyte-400' : 'text-slate-500 active:text-slate-300'
+                )}>
+                <div className="relative">
+                  <Icon className="w-5 h-5" />
+                  {count !== null && count > 0 && (
+                    <span className="absolute -top-1.5 -right-2 min-w-[16px] h-4 flex items-center justify-center rounded-full bg-novalyte-500 text-white text-[9px] font-bold px-1">
+                      {count > 99 ? '99+' : count}
+                    </span>
+                  )}
+                </div>
+                <span className="text-[10px] font-medium truncate w-full text-center">{item.shortLabel}</span>
+                {isActive && <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-5 h-0.5 bg-novalyte-400 rounded-full" />}
+              </button>
+            );
+          })}
+          {/* More button for remaining items */}
+          <button onClick={() => setMobileMenuOpen(true)}
+            className={cn(
+              'flex flex-col items-center gap-0.5 py-1.5 px-2 rounded-lg min-w-0 flex-1 transition-all',
+              ['email', 'forecast'].includes(currentView) ? 'text-novalyte-400' : 'text-slate-500 active:text-slate-300'
+            )}>
+            <Menu className="w-5 h-5" />
+            <span className="text-[10px] font-medium">More</span>
+          </button>
+        </div>
+      </nav>
 
       {/* Click-away for export menu */}
       {showExportMenu && <div className="fixed inset-0 z-40" onClick={() => setShowExportMenu(false)} />}

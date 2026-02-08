@@ -72,10 +72,10 @@ export default function RevenueForecastPage() {
   const maxMarketRevenue = Math.max(...forecast.topMarkets.map(m => m.projected), 1);
 
   return (
-    <div className="p-6 lg:p-8 space-y-6 max-w-[1600px] mx-auto animate-fade-in">
+    <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 max-w-[1600px] mx-auto animate-fade-in">
 
       {/* ═══ Header ═══ */}
-      <div className="flex items-end justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
         <div>
           <div className="flex items-center gap-3 mb-1">
             <h1 className="text-2xl font-bold text-white tracking-tight">Revenue Forecast</h1>

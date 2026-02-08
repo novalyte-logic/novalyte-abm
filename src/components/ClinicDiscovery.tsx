@@ -265,11 +265,11 @@ function ClinicDiscovery() {
   }, [clinics]);
 
   return (
-    <div className="p-6 lg:p-8">
+    <div className="p-4 sm:p-6 lg:p-8">
       {/* Header */}
-      <div className="mb-6 flex items-end justify-between">
+      <div className="mb-4 sm:mb-6 flex flex-col sm:flex-row sm:items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight">Clinic Discovery</h1>
+          <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">Clinic Discovery</h1>
           <p className="text-slate-500 text-sm">Find and manage men's health clinics across affluent markets</p>
         </div>
         <div className="flex items-center gap-1 bg-white/5 rounded-lg p-1 border border-white/[0.06]">
