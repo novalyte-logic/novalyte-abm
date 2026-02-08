@@ -378,7 +378,9 @@ function KeywordScanner() {
 
       {/* ─── Detail Drawer ─── */}
       {selectedTrend && (
-        <div className="fixed inset-y-0 right-0 w-full sm:w-[420px] bg-slate-900 shadow-2xl border-l border-white/[0.06] z-50 flex flex-col">
+        <div className="fixed inset-0 z-50 flex justify-end">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setSelectedTrend(null)} />
+          <div className="relative w-full sm:w-[420px] bg-slate-900 shadow-2xl border-l border-white/[0.06] flex flex-col">
           {/* Drawer header */}
           <div className="p-5 border-b border-white/[0.06] flex items-start justify-between">
             <div>
@@ -484,6 +486,7 @@ function KeywordScanner() {
               <Trash2 className="w-4 h-4 mr-1" /> Remove Trend
             </button>
           </div>
+        </div>
         </div>
       )}
     </div>

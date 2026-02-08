@@ -864,7 +864,7 @@ function CRM() {
                 {outreachAlert.contact.clinic.name} has been contacted before. Review activity before reaching out again.
               </p>
             </div>
-            <div className="px-5 py-4 max-h-[280px] overflow-auto">
+            <div className="px-5 py-4 max-h-[50vh] sm:max-h-[280px] overflow-auto">
               <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Outreach History ({outreachAlert.history.length})</p>
               <div className="space-y-2">
                 {outreachAlert.history.map(act => (
@@ -880,7 +880,7 @@ function CRM() {
                 ))}
               </div>
             </div>
-            <div className="px-5 py-3 bg-white/[0.02] border-t border-white/[0.06] flex items-center justify-end gap-2">
+            <div className="px-5 py-3 bg-white/[0.02] border-t border-white/[0.06] flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2">
               <button onClick={() => setOutreachAlert(null)} className="px-3 py-1.5 text-xs font-medium text-slate-400 bg-white/5 border border-white/[0.06] rounded-lg hover:bg-white/[0.08]">Cancel</button>
               <button onClick={handleOutreachAlertProceed} className={cn('px-3 py-1.5 text-xs font-medium text-white rounded-lg', outreachAlert.action === 'call' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-novalyte-600 hover:bg-novalyte-700')}>
                 {outreachAlert.action === 'call' ? 'Call Anyway' : 'Email Anyway'}

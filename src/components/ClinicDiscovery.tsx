@@ -535,9 +535,11 @@ function ClinicDiscovery() {
 
       {/* ─── Detail Drawer ─── */}
       {selectedClinic && (
-        <div className="fixed inset-y-0 right-0 w-[440px] bg-slate-900 shadow-2xl border-l border-white/[0.06] z-50 flex flex-col">
+        <div className="fixed inset-0 z-50 flex justify-end">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setSelectedClinic(null)} />
+          <div className="relative w-full sm:w-[440px] bg-slate-900 shadow-2xl border-l border-white/[0.06] flex flex-col">
           {/* Drawer header */}
-          <div className="p-5 border-b border-white/[0.06] flex items-start justify-between">
+          <div className="p-4 sm:p-5 border-b border-white/[0.06] flex items-start justify-between">
             <div className="flex-1 min-w-0">
               <h3 className="font-bold text-lg text-white truncate">{selectedClinic.name}</h3>
               <p className="text-sm text-slate-400 flex items-center mt-1">
@@ -555,7 +557,7 @@ function ClinicDiscovery() {
           </div>
 
           {/* Drawer body */}
-          <div className="flex-1 overflow-y-auto p-5 space-y-5">
+          <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-5">
             {/* Rating & Reviews */}
             {(selectedClinic.rating || selectedClinic.reviewCount) && (
               <div className="flex items-center gap-4">
@@ -662,7 +664,7 @@ function ClinicDiscovery() {
           </div>
 
           {/* Drawer footer actions */}
-          <div className="p-5 border-t border-white/[0.06] space-y-2">
+          <div className="p-4 sm:p-5 border-t border-white/[0.06] space-y-2">
             {!isInCRM(selectedClinic) && (
               <button onClick={() => handleAddToCRM(selectedClinic)} className="btn btn-primary w-full">
                 <Plus className="w-4 h-4 mr-2" /> Add to CRM
@@ -684,6 +686,7 @@ function ClinicDiscovery() {
               <Trash2 className="w-4 h-4 mr-1" /> Remove Clinic
             </button>
           </div>
+        </div>
         </div>
       )}
     </div>
