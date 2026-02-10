@@ -78,6 +78,8 @@ function dmToRow(dm: DecisionMaker) {
     linkedin_url: dm.linkedInUrl || null,
     confidence: dm.confidence, enriched_at: iso(dm.enrichedAt),
     source: dm.source || null,
+    email_verified: dm.emailVerified || false,
+    email_verification_status: dm.emailVerificationStatus || null,
   };
 }
 function rowToDm(r: any): DecisionMaker {
@@ -90,6 +92,8 @@ function rowToDm(r: any): DecisionMaker {
     confidence: Number(r.confidence || 0),
     enrichedAt: r.enriched_at ? new Date(r.enriched_at) : undefined,
     source: r.source || 'manual',
+    emailVerified: r.email_verified || false,
+    emailVerificationStatus: r.email_verification_status || undefined,
   };
 }
 

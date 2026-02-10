@@ -182,6 +182,8 @@ function ClinicDiscovery() {
           confidence: d.confidence || 0,
           source: d.source || 'unknown',
           enrichedAt: new Date().toISOString(),
+          emailVerified: d.emailVerified || false,
+          emailVerificationStatus: d.emailVerificationStatus || 'unknown',
         }));
 
       const best = selectBestDM(dms)!;
@@ -681,9 +683,14 @@ function ClinicDiscovery() {
                         <span className="px-1.5 py-0.5 rounded bg-white/5 text-slate-500">{ec.source}</span>
                       </div>
                       {ec.email && (
-                        <a href={`mailto:${ec.email}`} className="flex items-center gap-1.5 text-xs text-novalyte-400 hover:underline">
-                          <Mail className="w-3 h-3" /> {ec.email}
-                        </a>
+                        <div className="flex items-center gap-1.5">
+                          <a href={`mailto:${ec.email}`} className="flex items-center gap-1 text-xs text-novalyte-400 hover:underline">
+                            <Mail className="w-3 h-3" /> {ec.email}
+                          </a>
+                          {ec.emailVerified && ec.emailVerificationStatus === 'valid' && <span className="text-[8px] px-1 py-0.5 bg-emerald-500/15 text-emerald-400 rounded font-medium">✓ Verified</span>}
+                          {ec.emailVerified && ec.emailVerificationStatus === 'risky' && <span className="text-[8px] px-1 py-0.5 bg-amber-500/15 text-amber-400 rounded font-medium">Risky</span>}
+                          {ec.emailVerified && ec.emailVerificationStatus === 'invalid' && <span className="text-[8px] px-1 py-0.5 bg-red-500/15 text-red-400 rounded font-medium">Invalid</span>}
+                        </div>
                       )}
                       {ec.phone && (
                         <a href={`tel:${ec.phone}`} className="flex items-center gap-1.5 text-xs text-emerald-400 hover:underline">

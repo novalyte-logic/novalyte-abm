@@ -4,6 +4,7 @@ import {
   AlertCircle, MousePointerClick, TrendingUp,
   Loader2, BarChart3, Radio, Inbox, MailOpen, MailX,
   Sparkles, Zap, X, ChevronDown, Edit3, Wand2, Users,
+  ShieldCheck, ShieldAlert, ShieldX, Trash2,
 } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
 import { resendService, SentEmail, EmailEvent } from '../services/resendService';
@@ -12,6 +13,7 @@ import { CRMContact } from '../types';
 import { cn } from '../utils/cn';
 import toast from 'react-hot-toast';
 import { format, formatDistanceToNow } from 'date-fns';
+import axios from 'axios';
 
 /* ─── Types ─── */
 type Tab = 'compose' | 'sequences' | 'stream' | 'analytics';
@@ -38,6 +40,47 @@ function getContactEmail(c: CRMContact): string | null {
   if (c.clinic.email) return c.clinic.email;
   return null;
 }
+
+/* ─── Email Verification Types ─── */
+type VerificationStatus = 'valid' | 'invalid' | 'risky' | 'unknown' | 'pending';
+
+interface EmailVerification {
+  email: string;
+  status: VerificationStatus;
+  confidence: number; // 0-100
+}
+
+function getEmailConfidence(contact: CRMContact, verifications: Map<string, EmailVerification>): { score: number; status: VerificationStatus; label: string } {
+  const email = getContactEmail(contact);
+  if (!email) return { score: 0, status: 'unknown', label: 'No email' };
+
+  // Check verification cache first
+  const v = verifications.get(email);
+  if (v) return { score: v.confidence, status: v.status, label: v.status === 'valid' ? 'Verified' : v.status === 'invalid' ? 'Invalid' : v.status === 'risky' ? 'Risky' : 'Unverified' };
+
+  // Check DM verification status from enrichment
+  const dm = contact.decisionMaker;
+  if (dm?.emailVerified && dm.emailVerificationStatus === 'valid') return { score: 95, status: 'valid', label: 'Verified' };
+  if (dm?.emailVerified && dm.emailVerificationStatus === 'invalid') return { score: 5, status: 'invalid', label: 'Invalid' };
+  if (dm?.emailVerified && dm.emailVerificationStatus === 'risky') return { score: 60, status: 'risky', label: 'Risky' };
+
+  // Check enrichedContacts for this email
+  const ec = contact.clinic.enrichedContacts?.find(c => c.email === email);
+  if (ec?.emailVerified && ec.emailVerificationStatus === 'valid') return { score: 95, status: 'valid', label: 'Verified' };
+  if (ec?.emailVerified && ec.emailVerificationStatus === 'invalid') return { score: 5, status: 'invalid', label: 'Invalid' };
+  if (ec?.emailVerified && ec.emailVerificationStatus === 'risky') return { score: 60, status: 'risky', label: 'Risky' };
+
+  // Heuristic score based on source
+  if (isGenericEmail(email)) return { score: 25, status: 'unknown', label: 'Generic' };
+  if (dm?.source === 'apollo') return { score: dm.confidence || 70, status: 'unknown', label: 'Apollo' };
+  if (dm?.source === 'npi') return { score: 55, status: 'unknown', label: 'NPI' };
+  return { score: 40, status: 'unknown', label: 'Unverified' };
+}
+
+const REVENUEBASE_KEY = (() => {
+  const metaEnv: any = (typeof import.meta !== 'undefined' && (import.meta as any).env) ? (import.meta as any).env : {};
+  return metaEnv?.VITE_REVENUEBASE_API_KEY || '';
+})();
 
 
 /* ═══════════════════════════════════════════════════════════════
@@ -221,7 +264,9 @@ function ComposeTab({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editSubject, setEditSubject] = useState('');
   const [editBody, setEditBody] = useState('');
-
+  const [verifications, setVerifications] = useState<Map<string, EmailVerification>>(new Map());
+  const [verifying, setVerifying] = useState(false);
+  const [verifyProgress, setVerifyProgress] = useState({ done: 0, total: 0 });
   // Eligible contacts: have email, not emailed today
   const eligible = useMemo(() => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -267,6 +312,78 @@ function ComposeTab({
     setSelectedIds(new Set());
     setDrafts(new Map());
   };
+
+  /* ── Email Verification ── */
+  const handleVerifyEmails = async () => {
+    if (verifying || selectedIds.size === 0 || !REVENUEBASE_KEY) {
+      if (!REVENUEBASE_KEY) toast.error('RevenueBase API key not configured');
+      return;
+    }
+    setVerifying(true);
+    const toVerify = selectedContacts.map(c => ({ id: c.id, email: getContactEmail(c)! })).filter(e => e.email);
+    const unique = [...new Map(toVerify.map(e => [e.email, e])).values()];
+    setVerifyProgress({ done: 0, total: unique.length });
+    const newVerifications = new Map(verifications);
+    let validCount = 0, invalidCount = 0;
+
+    for (let i = 0; i < unique.length; i += 3) {
+      const batch = unique.slice(i, i + 3);
+      await Promise.all(batch.map(async ({ email }) => {
+        try {
+          const res = await axios.post('https://api.revenuebase.ai/v1/process-email', { email }, {
+            headers: { 'x-key': REVENUEBASE_KEY, 'Content-Type': 'application/json' }, timeout: 10000,
+          });
+          const status = (res.data.status || res.data.result || res.data.verification_status || '').toLowerCase();
+          let vs: VerificationStatus = 'unknown';
+          let confidence = 40;
+          if (status === 'valid' || status === 'deliverable' || status === 'safe') { vs = 'valid'; confidence = 95; validCount++; }
+          else if (status === 'invalid' || status === 'undeliverable' || status === 'bounce') { vs = 'invalid'; confidence = 5; invalidCount++; }
+          else if (status === 'risky' || status === 'catch-all' || status === 'catch_all' || status === 'accept_all') { vs = 'risky'; confidence = 60; }
+          newVerifications.set(email, { email, status: vs, confidence });
+        } catch (err: any) {
+          if (err?.response?.status === 422 || err?.response?.status === 400) {
+            newVerifications.set(email, { email, status: 'invalid', confidence: 5 }); invalidCount++;
+          } else {
+            newVerifications.set(email, { email, status: 'unknown', confidence: 40 });
+          }
+        }
+      }));
+      setVerifyProgress({ done: Math.min(i + 3, unique.length), total: unique.length });
+      setVerifications(new Map(newVerifications));
+    }
+
+    setVerifying(false);
+    toast.success(`Verified ${unique.length} emails: ${validCount} valid, ${invalidCount} invalid`);
+  };
+
+  const handleRemoveBadEmails = () => {
+    const badIds = new Set<string>();
+    for (const c of selectedContacts) {
+      const email = getContactEmail(c);
+      if (!email) { badIds.add(c.id); continue; }
+      const v = verifications.get(email);
+      if (v?.status === 'invalid') badIds.add(c.id);
+      else if (c.decisionMaker?.emailVerified && c.decisionMaker.emailVerificationStatus === 'invalid') badIds.add(c.id);
+      else if (c.clinic.enrichedContacts?.find(ec => ec.email === email)?.emailVerificationStatus === 'invalid') badIds.add(c.id);
+    }
+    if (badIds.size === 0) { toast('No invalid emails to remove'); return; }
+    setSelectedIds(prev => { const s = new Set(prev); badIds.forEach(id => s.delete(id)); return s; });
+    setDrafts(prev => { const m = new Map(prev); badIds.forEach(id => m.delete(id)); return m; });
+    toast.success(`Removed ${badIds.size} invalid email${badIds.size !== 1 ? 's' : ''}`);
+  };
+
+  // Verification summary for selected contacts
+  const verificationSummary = useMemo(() => {
+    let valid = 0, invalid = 0, risky = 0, unverified = 0;
+    for (const c of selectedContacts) {
+      const { status } = getEmailConfidence(c, verifications);
+      if (status === 'valid') valid++;
+      else if (status === 'invalid') invalid++;
+      else if (status === 'risky') risky++;
+      else unverified++;
+    }
+    return { valid, invalid, risky, unverified, total: selectedContacts.length };
+  }, [selectedContacts, verifications]);
 
   const getStep = (contact: CRMContact): 'intro' | 'follow_up' | 'breakup' => {
     const prev = sentEmails.filter(e => e.contactId === contact.id);
@@ -439,6 +556,44 @@ function ComposeTab({
           </div>
         </div>
 
+        {/* Verification bar */}
+        {selectedIds.size > 0 && (
+          <div className="flex flex-wrap items-center gap-3 mb-4 p-3 rounded-xl bg-white/[0.02] border border-white/[0.06]">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-slate-400" />
+              <span className="text-xs font-medium text-slate-300">Email Health</span>
+            </div>
+            <div className="flex items-center gap-2 text-[11px]">
+              {verificationSummary.valid > 0 && <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 font-medium">{verificationSummary.valid} verified</span>}
+              {verificationSummary.risky > 0 && <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 font-medium">{verificationSummary.risky} risky</span>}
+              {verificationSummary.invalid > 0 && <span className="px-2 py-0.5 rounded-full bg-red-500/10 text-red-400 font-medium">{verificationSummary.invalid} invalid</span>}
+              {verificationSummary.unverified > 0 && <span className="px-2 py-0.5 rounded-full bg-white/5 text-slate-500 font-medium">{verificationSummary.unverified} unverified</span>}
+            </div>
+            <div className="flex items-center gap-2 ml-auto">
+              {verificationSummary.invalid > 0 && (
+                <button onClick={handleRemoveBadEmails} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors">
+                  <Trash2 className="w-3 h-3" /> Remove Invalid ({verificationSummary.invalid})
+                </button>
+              )}
+              <button onClick={handleVerifyEmails} disabled={verifying || selectedIds.size === 0}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20 transition-colors disabled:opacity-50">
+                {verifying ? (
+                  <><Loader2 className="w-3 h-3 animate-spin" /> Verifying {verifyProgress.done}/{verifyProgress.total}</>
+                ) : (
+                  <><ShieldCheck className="w-3.5 h-3.5" /> Verify Emails</>
+                )}
+              </button>
+            </div>
+            {verifying && (
+              <div className="w-full mt-1">
+                <div className="w-full h-1 bg-white/5 rounded-full overflow-hidden">
+                  <div className="h-full bg-emerald-500 rounded-full transition-all" style={{ width: `${verifyProgress.total ? (verifyProgress.done / verifyProgress.total) * 100 : 0}%` }} />
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Selected chips */}
         {selectedContacts.length > 0 && !dropdownOpen && (
           <div className="flex flex-wrap gap-2 mb-4">
@@ -479,10 +634,12 @@ function ComposeTab({
                 const email = getContactEmail(c)!;
                 const dm = c.decisionMaker;
                 const isSelected = selectedIds.has(c.id);
+                const emailConf = getEmailConfidence(c, verifications);
                 return (
                   <div key={c.id} onClick={() => toggleClinic(c.id)}
                     className={cn('flex items-center gap-4 px-4 py-3 cursor-pointer transition-all border-b border-white/[0.04] last:border-0',
-                      isSelected ? 'bg-novalyte-500/10' : 'hover:bg-white/[0.04]')}>
+                      isSelected ? 'bg-novalyte-500/10' : 'hover:bg-white/[0.04]',
+                      emailConf.status === 'invalid' && 'opacity-50')}>
                     <input type="checkbox" checked={isSelected} readOnly
                       className="w-4 h-4 rounded border-white/20 bg-white/5 text-novalyte-500 focus:ring-novalyte-500/30 shrink-0" />
                     <div className="flex-1 min-w-0">
@@ -500,7 +657,18 @@ function ComposeTab({
                         <span className={isGenericEmail(email) ? 'text-slate-600' : 'text-novalyte-400/80'}>{email}</span>
                       </div>
                     </div>
-                    <span className="text-[10px] text-slate-600 shrink-0">{c.clinic.services.slice(0, 2).join(', ')}</span>
+                    {/* Email confidence badge */}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {emailConf.status === 'valid' && <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />}
+                      {emailConf.status === 'risky' && <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />}
+                      {emailConf.status === 'invalid' && <ShieldX className="w-3.5 h-3.5 text-red-400" />}
+                      <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded',
+                        emailConf.score >= 80 ? 'bg-emerald-500/10 text-emerald-400' :
+                        emailConf.score >= 50 ? 'bg-amber-500/10 text-amber-400' :
+                        emailConf.score >= 20 ? 'bg-red-500/10 text-red-400' :
+                        'bg-white/5 text-slate-500'
+                      )}>{emailConf.score}%</span>
+                    </div>
                   </div>
                 );
               })}
@@ -567,6 +735,23 @@ function ComposeTab({
                       <p className="text-xs text-slate-200 font-medium truncate">{draft.contact.clinic.name}</p>
                       <span className="text-[10px] text-slate-600">→ {draft.email}</span>
                       {draft.edited && <span className="text-[9px] text-amber-400">edited</span>}
+                      {/* Email confidence badge on draft */}
+                      {(() => {
+                        const conf = getEmailConfidence(draft.contact, verifications);
+                        return (
+                          <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded flex items-center gap-0.5',
+                            conf.status === 'valid' ? 'bg-emerald-500/10 text-emerald-400' :
+                            conf.status === 'invalid' ? 'bg-red-500/10 text-red-400' :
+                            conf.status === 'risky' ? 'bg-amber-500/10 text-amber-400' :
+                            'bg-white/5 text-slate-500'
+                          )}>
+                            {conf.status === 'valid' && <ShieldCheck className="w-2.5 h-2.5" />}
+                            {conf.status === 'invalid' && <ShieldX className="w-2.5 h-2.5" />}
+                            {conf.status === 'risky' && <ShieldAlert className="w-2.5 h-2.5" />}
+                            {conf.score}%
+                          </span>
+                        );
+                      })()}
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
                       {!isEditing && (
@@ -632,7 +817,62 @@ function ComposeTab({
 
       {/* ── Step 3: Send ── */}
       {readyDrafts.length > 0 && (
-        <div className="glass-card p-4">
+        <div className="glass-card p-4 space-y-3">
+          {/* Invalid email warning */}
+          {(() => {
+            const invalidDrafts = readyDrafts.filter(d => {
+              const conf = getEmailConfidence(d.contact, verifications);
+              return conf.status === 'invalid';
+            });
+            const riskyDrafts = readyDrafts.filter(d => {
+              const conf = getEmailConfidence(d.contact, verifications);
+              return conf.status === 'risky';
+            });
+            const avgConfidence = readyDrafts.length > 0
+              ? Math.round(readyDrafts.reduce((sum, d) => sum + getEmailConfidence(d.contact, verifications).score, 0) / readyDrafts.length)
+              : 0;
+            return (
+              <>
+                {/* Confidence score bar */}
+                <div className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.02] border border-white/[0.06]">
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 text-slate-400" />
+                    <span className="text-xs font-medium text-slate-300">Send Queue Health</span>
+                  </div>
+                  <div className="flex-1 h-2 bg-white/5 rounded-full overflow-hidden">
+                    <div className={cn('h-full rounded-full transition-all',
+                      avgConfidence >= 80 ? 'bg-emerald-500' : avgConfidence >= 50 ? 'bg-amber-500' : 'bg-red-500'
+                    )} style={{ width: `${avgConfidence}%` }} />
+                  </div>
+                  <span className={cn('text-sm font-bold tabular-nums',
+                    avgConfidence >= 80 ? 'text-emerald-400' : avgConfidence >= 50 ? 'text-amber-400' : 'text-red-400'
+                  )}>{avgConfidence}%</span>
+                </div>
+
+                {invalidDrafts.length > 0 && (
+                  <div className="flex items-center gap-3 p-3 rounded-xl bg-red-500/5 border border-red-500/20">
+                    <ShieldX className="w-4 h-4 text-red-400 shrink-0" />
+                    <p className="text-xs text-red-300 flex-1">{invalidDrafts.length} draft{invalidDrafts.length !== 1 ? 's have' : ' has'} invalid email{invalidDrafts.length !== 1 ? 's' : ''} — these will likely bounce.</p>
+                    <button onClick={() => {
+                      const badIds = new Set(invalidDrafts.map(d => d.contactId));
+                      setDrafts(prev => { const m = new Map(prev); badIds.forEach(id => m.delete(id)); return m; });
+                      setSelectedIds(prev => { const s = new Set(prev); badIds.forEach(id => s.delete(id)); return s; });
+                      toast.success(`Removed ${badIds.size} invalid drafts`);
+                    }} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 shrink-0">
+                      <Trash2 className="w-3 h-3" /> Remove
+                    </button>
+                  </div>
+                )}
+                {riskyDrafts.length > 0 && invalidDrafts.length === 0 && (
+                  <div className="flex items-center gap-3 p-3 rounded-xl bg-amber-500/5 border border-amber-500/20">
+                    <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0" />
+                    <p className="text-xs text-amber-300">{riskyDrafts.length} email{riskyDrafts.length !== 1 ? 's are' : ' is'} marked risky — may be catch-all domains. Proceed with caution.</p>
+                  </div>
+                )}
+              </>
+            );
+          })()}
+
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <Send className="w-4 h-4 text-novalyte-400" />

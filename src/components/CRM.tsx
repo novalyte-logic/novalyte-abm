@@ -215,27 +215,62 @@ function CRM() {
 
   const handleEnrichContact = useCallback(async (contact: CRMContact) => {
     setIsEnriching(true);
-    toast.loading('Searching NPI Registry & enriching...', { id: 'enrich-crm' });
+    toast.loading('Finding & verifying decision makers...', { id: 'enrich-crm' });
     try {
       const dms = await enrichmentService.findDecisionMakers(contact.clinic);
       if (!dms.length) { toast('No decision makers found', { id: 'enrich-crm' }); setIsEnriching(false); return; }
+
+      // Build enrichedContacts array with verification status
+      const enrichedContacts = dms
+        .filter(d => d.email || d.phone)
+        .map(d => ({
+          name: `${d.firstName} ${d.lastName}`.trim(),
+          title: d.title || '',
+          role: d.role || 'clinic_manager',
+          email: d.email || undefined,
+          phone: d.phone || undefined,
+          linkedInUrl: d.linkedInUrl || undefined,
+          confidence: d.confidence || 0,
+          source: d.source || 'unknown',
+          enrichedAt: new Date().toISOString(),
+          emailVerified: d.emailVerified || false,
+          emailVerificationStatus: d.emailVerificationStatus || ('unknown' as const),
+        }));
+
+      // Pick best DM (prefer verified emails)
       const rolePriority = ['owner', 'medical_director', 'clinic_manager', 'practice_administrator', 'operations_manager', 'marketing_director'];
-      const withEmail = dms.filter(d => !!d.email);
+      const verified = dms.filter(d => d.email && d.emailVerificationStatus === 'valid');
+      const withEmail = verified.length > 0 ? verified : dms.filter(d => !!d.email);
       const best = withEmail.length > 0
         ? (rolePriority.reduce<typeof dms[number] | null>((f, r) => f || withEmail.find(d => d.role === r) || null, null) || withEmail.reduce((a, b) => a.confidence > b.confidence ? a : b))
         : dms.reduce((a, b) => a.confidence > b.confidence ? a : b);
-      const clinicUpdates: Partial<Clinic> = { managerName: `${best.firstName} ${best.lastName}`.trim(), managerEmail: best.email };
-      if (best.role === 'owner' || best.role === 'medical_director') { clinicUpdates.ownerName = `${best.firstName} ${best.lastName}`.trim(); clinicUpdates.ownerEmail = best.email; }
+
+      const clinicUpdates: Partial<Clinic> = {
+        managerName: `${best.firstName} ${best.lastName}`.trim(),
+        managerEmail: best.email,
+        enrichedContacts,
+      };
+      if (best.role === 'owner' || best.role === 'medical_director') {
+        clinicUpdates.ownerName = `${best.firstName} ${best.lastName}`.trim();
+        clinicUpdates.ownerEmail = best.email;
+      }
+      // Fill second DM slot
+      const second = dms.find(d => d.id !== best.id && d.email && d.emailVerificationStatus !== 'invalid');
+      if (second && (!clinicUpdates.ownerName || clinicUpdates.ownerName === clinicUpdates.managerName)) {
+        clinicUpdates.ownerName = `${second.firstName} ${second.lastName}`.trim();
+        clinicUpdates.ownerEmail = second.email;
+      }
 
       // Re-score after enrichment
       const updatedContact: CRMContact = { ...contact, decisionMaker: best, clinic: { ...contact.clinic, ...clinicUpdates } };
       const { score, priority } = computeLeadScore(updatedContact);
 
       updateContact(contact.id, { decisionMaker: best, clinic: { ...contact.clinic, ...clinicUpdates }, status: best.email ? 'ready_to_call' : contact.status, score, priority } as any);
-      addActivity(contact.id, 'enriched', `Found decision maker: ${best.firstName} ${best.lastName} (${best.source})`);
+      addActivity(contact.id, 'enriched', `Found ${enrichedContacts.length} contacts — ${enrichedContacts.filter(c => c.emailVerified && c.emailVerificationStatus === 'valid').length} verified emails`);
       const updated = useAppStore.getState().contacts.find(c => c.id === contact.id);
       if (updated) selectContact(updated);
-      toast.success(`Found: ${best.firstName} ${best.lastName}${best.email ? ` — ${best.email}` : ''}`, { id: 'enrich-crm' });
+      const verifiedCount = enrichedContacts.filter(c => c.emailVerified && c.emailVerificationStatus === 'valid').length;
+      toast.success(`Found ${enrichedContacts.length} contacts (${verifiedCount} verified)`, { id: 'enrich-crm' });
     } catch (err) { console.error(err); toast.error('Enrichment failed', { id: 'enrich-crm' }); }
     setIsEnriching(false);
   }, [updateContact, selectContact, addActivity]);
@@ -462,7 +497,19 @@ function CRM() {
                                       <div className="w-6 h-6 rounded-full bg-gradient-to-br from-novalyte-400 to-novalyte-600 flex items-center justify-center text-white text-[10px] font-bold shrink-0">{dm.firstName[0]}{dm.lastName[0]}</div>
                                       <div className="min-w-0">
                                         <p className="text-sm text-slate-800 truncate">{dm.firstName} {dm.lastName}</p>
-                                        {hasEmail && <p className="text-[10px] text-emerald-600 truncate flex items-center gap-0.5"><CheckCircle2 className="w-2.5 h-2.5 shrink-0" />{dm.email}</p>}
+                                        {hasEmail && (
+                                          <p className="text-[10px] truncate flex items-center gap-0.5">
+                                            {dm.emailVerified && dm.emailVerificationStatus === 'valid' ? (
+                                              <><CheckCircle2 className="w-2.5 h-2.5 shrink-0 text-emerald-500" /><span className="text-emerald-600">{dm.email}</span></>
+                                            ) : dm.emailVerified && dm.emailVerificationStatus === 'risky' ? (
+                                              <><AlertCircle className="w-2.5 h-2.5 shrink-0 text-amber-500" /><span className="text-amber-600">{dm.email}</span></>
+                                            ) : dm.emailVerified && dm.emailVerificationStatus === 'invalid' ? (
+                                              <><AlertCircle className="w-2.5 h-2.5 shrink-0 text-red-500" /><span className="text-red-500 line-through">{dm.email}</span></>
+                                            ) : (
+                                              <><CheckCircle2 className="w-2.5 h-2.5 shrink-0 text-slate-500" /><span className="text-slate-400">{dm.email}</span></>
+                                            )}
+                                          </p>
+                                        )}
                                       </div>
                                     </div>
                                   ) : <span className="text-xs text-slate-400 flex items-center gap-1"><AlertCircle className="w-3 h-3 text-amber-400" />No DM</span>}
@@ -564,7 +611,55 @@ function CRM() {
                 {/* INTEL TAB */}
                 {drawerTab === 'intel' && intel && (<>
                   <Section title="Decision Maker" icon={<UserCheck className="w-3.5 h-3.5 text-novalyte-400" />} accent="novalyte">
-                    {selectedContact.decisionMaker ? (
+                    {selectedContact.clinic.enrichedContacts && selectedContact.clinic.enrichedContacts.length > 0 ? (
+                      <div className="space-y-2.5">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[10px] text-slate-500">{selectedContact.clinic.enrichedContacts.length} contacts found</span>
+                          <button onClick={() => handleEnrichContact(selectedContact)} disabled={isEnriching} className="text-[10px] text-novalyte-400 hover:underline flex items-center gap-1">
+                            <RefreshCw className={cn('w-3 h-3', isEnriching && 'animate-spin')} /> Re-enrich
+                          </button>
+                        </div>
+                        {selectedContact.clinic.enrichedContacts.map((ec: any, idx: number) => (
+                          <div key={idx} className={cn('border rounded-lg p-2.5 space-y-1.5',
+                            ec.emailVerified && ec.emailVerificationStatus === 'valid' ? 'bg-emerald-500/5 border-emerald-500/20' :
+                            ec.emailVerified && ec.emailVerificationStatus === 'invalid' ? 'bg-red-500/5 border-red-500/15' :
+                            'bg-white/[0.02] border-white/[0.06]'
+                          )}>
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-semibold text-white">{ec.name}</span>
+                              <div className="flex items-center gap-1.5">
+                                {ec.emailVerified && ec.emailVerificationStatus === 'valid' && <span className="text-[8px] px-1.5 py-0.5 bg-emerald-500/15 text-emerald-400 rounded font-bold">✓ VERIFIED</span>}
+                                {ec.emailVerified && ec.emailVerificationStatus === 'risky' && <span className="text-[8px] px-1.5 py-0.5 bg-amber-500/15 text-amber-400 rounded font-bold">RISKY</span>}
+                                {ec.emailVerified && ec.emailVerificationStatus === 'invalid' && <span className="text-[8px] px-1.5 py-0.5 bg-red-500/15 text-red-400 rounded font-bold">INVALID</span>}
+                                <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded',
+                                  ec.confidence >= 90 ? 'bg-emerald-500/15 text-emerald-400' :
+                                  ec.confidence >= 70 ? 'bg-cyan-500/15 text-cyan-400' :
+                                  ec.confidence >= 50 ? 'bg-amber-500/15 text-amber-400' :
+                                  'bg-slate-500/15 text-slate-400'
+                                )}>{ec.confidence}%</span>
+                              </div>
+                            </div>
+                            {ec.title && <p className="text-[10px] text-slate-500">{ec.title}</p>}
+                            <div className="flex items-center gap-1.5 text-[10px]">
+                              <span className={cn('px-1.5 py-0.5 rounded capitalize',
+                                ec.role === 'owner' ? 'bg-purple-500/10 text-purple-400' :
+                                ec.role === 'medical_director' ? 'bg-blue-500/10 text-blue-400' :
+                                'bg-white/5 text-slate-400'
+                              )}>{(ec.role || '').replace(/_/g, ' ')}</span>
+                              <span className="px-1.5 py-0.5 rounded bg-white/5 text-slate-500">{ec.source}</span>
+                            </div>
+                            {ec.email && (
+                              <div className="flex items-center gap-1.5">
+                                <a href={`mailto:${ec.email}`} className="flex items-center gap-1 text-xs text-novalyte-400 hover:underline"><Mail className="w-3 h-3" />{ec.email}</a>
+                                <button onClick={() => { navigator.clipboard.writeText(ec.email); toast.success('Copied'); }} className="p-0.5 rounded hover:bg-white/5"><Copy className="w-3 h-3 text-slate-500" /></button>
+                              </div>
+                            )}
+                            {ec.phone && <a href={`tel:${ec.phone}`} className="flex items-center gap-1 text-xs text-emerald-400 hover:underline"><Phone className="w-3 h-3" />{ec.phone}</a>}
+                            {ec.linkedInUrl && <a href={ec.linkedInUrl} target="_blank" rel="noopener" className="flex items-center gap-1 text-xs text-blue-400 hover:underline"><Linkedin className="w-3 h-3" />LinkedIn</a>}
+                          </div>
+                        ))}
+                      </div>
+                    ) : selectedContact.decisionMaker ? (
                       <div className="flex items-start gap-3">
                         <div className="w-9 h-9 rounded-full bg-gradient-to-br from-novalyte-500 to-novalyte-700 flex items-center justify-center text-white font-bold text-xs shrink-0">{selectedContact.decisionMaker.firstName[0]}{selectedContact.decisionMaker.lastName[0]}</div>
                         <div className="flex-1 min-w-0">
@@ -576,17 +671,20 @@ function CRM() {
                           <div className="flex items-center gap-3 mt-2 flex-wrap">
                             {selectedContact.decisionMaker.email ? (
                               <span className="flex items-center gap-1 text-xs"><Mail className="w-3 h-3 text-novalyte-400" /><a href={`mailto:${selectedContact.decisionMaker.email}`} className="text-novalyte-400 hover:underline">{selectedContact.decisionMaker.email}</a>
-                                {selectedContact.decisionMaker.title?.includes('[valid]') && <span className="text-[8px] px-1 py-0.5 bg-emerald-500/15 text-emerald-400 rounded font-medium">✓ Verified</span>}
-                                {selectedContact.decisionMaker.title?.includes('[risky]') && <span className="text-[8px] px-1 py-0.5 bg-amber-500/15 text-amber-400 rounded font-medium">Risky</span>}
-                                {selectedContact.decisionMaker.title?.includes('[invalid]') && <span className="text-[8px] px-1 py-0.5 bg-red-500/15 text-red-400 rounded font-medium">Invalid</span>}
+                                {selectedContact.decisionMaker.emailVerified && selectedContact.decisionMaker.emailVerificationStatus === 'valid' && <span className="text-[8px] px-1 py-0.5 bg-emerald-500/15 text-emerald-400 rounded font-medium">✓ Verified</span>}
+                                {selectedContact.decisionMaker.emailVerified && selectedContact.decisionMaker.emailVerificationStatus === 'risky' && <span className="text-[8px] px-1 py-0.5 bg-amber-500/15 text-amber-400 rounded font-medium">Risky</span>}
+                                {selectedContact.decisionMaker.emailVerified && selectedContact.decisionMaker.emailVerificationStatus === 'invalid' && <span className="text-[8px] px-1 py-0.5 bg-red-500/15 text-red-400 rounded font-medium">Invalid</span>}
                               </span>
                             ) : <span className="text-[11px] text-amber-400 flex items-center gap-1"><Mail className="w-3 h-3" />No email</span>}
                             {selectedContact.decisionMaker.phone && <a href={`tel:${selectedContact.decisionMaker.phone}`} className="flex items-center gap-1 text-xs text-slate-500 hover:text-novalyte-400"><Phone className="w-3 h-3" />{selectedContact.decisionMaker.phone}</a>}
                             {selectedContact.decisionMaker.linkedInUrl && <a href={selectedContact.decisionMaker.linkedInUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs text-blue-400 hover:underline"><Linkedin className="w-3 h-3" />LinkedIn</a>}
                           </div>
+                          <button onClick={() => handleEnrichContact(selectedContact)} disabled={isEnriching} className="mt-2 text-[10px] text-novalyte-400 hover:underline flex items-center gap-1">
+                            <RefreshCw className={cn('w-3 h-3', isEnriching && 'animate-spin')} /> Re-enrich
+                          </button>
                         </div>
                       </div>
-                    ) : isEnriching ? <div className="flex items-center gap-2 py-1 text-slate-400 text-xs"><RefreshCw className="w-3.5 h-3.5 animate-spin" />Searching...</div> : <p className="text-xs text-slate-400">No DM found. Click Enrich.</p>}
+                    ) : isEnriching ? <div className="flex items-center gap-2 py-1 text-slate-400 text-xs"><RefreshCw className="w-3.5 h-3.5 animate-spin" />Finding & verifying...</div> : <p className="text-xs text-slate-400">No DM found. Click Enrich.</p>}
                   </Section>
 
                   <Section title="Outreach Playbook" icon={<Sparkles className="w-3.5 h-3.5 text-emerald-500" />} accent="emerald">
@@ -647,19 +745,52 @@ function CRM() {
 
                   <Section title="Key Contacts" icon={<Users className="w-3.5 h-3.5 text-novalyte-400" />} accent="novalyte">
                     <div className="space-y-2 text-xs">
-                      {selectedContact.clinic.ownerName && (
-                        <div className="flex items-center justify-between p-2 bg-novalyte-500/10 rounded-lg">
-                          <div><p className="font-medium text-slate-300">{selectedContact.clinic.ownerName}</p><p className="text-[10px] text-slate-500">Owner / Director</p></div>
-                          {selectedContact.clinic.ownerEmail && <a href={`mailto:${selectedContact.clinic.ownerEmail}`} className="text-novalyte-400 hover:underline text-[11px]">{selectedContact.clinic.ownerEmail}</a>}
-                        </div>
+                      {selectedContact.clinic.enrichedContacts && selectedContact.clinic.enrichedContacts.length > 0 ? (
+                        <>
+                          {selectedContact.clinic.enrichedContacts.map((ec: any, idx: number) => (
+                            <div key={idx} className={cn('flex items-center justify-between p-2 rounded-lg',
+                              ec.emailVerified && ec.emailVerificationStatus === 'valid' ? 'bg-emerald-500/10' :
+                              ec.emailVerified && ec.emailVerificationStatus === 'invalid' ? 'bg-red-500/5' :
+                              idx === 0 ? 'bg-novalyte-500/10' : 'bg-white/[0.03]'
+                            )}>
+                              <div>
+                                <p className="font-medium text-slate-300">{ec.name}</p>
+                                <p className="text-[10px] text-slate-500 capitalize">{(ec.role || '').replace(/_/g, ' ')}{ec.title ? ` · ${ec.title}` : ''}</p>
+                              </div>
+                              <div className="text-right space-y-0.5">
+                                {ec.email && (
+                                  <div className="flex items-center gap-1">
+                                    <a href={`mailto:${ec.email}`} className="text-novalyte-400 hover:underline text-[11px]">{ec.email}</a>
+                                    {ec.emailVerified && ec.emailVerificationStatus === 'valid' && <span className="text-[7px] px-1 bg-emerald-500/15 text-emerald-400 rounded">✓</span>}
+                                    {ec.emailVerified && ec.emailVerificationStatus === 'risky' && <span className="text-[7px] px-1 bg-amber-500/15 text-amber-400 rounded">!</span>}
+                                    {ec.emailVerified && ec.emailVerificationStatus === 'invalid' && <span className="text-[7px] px-1 bg-red-500/15 text-red-400 rounded">✗</span>}
+                                  </div>
+                                )}
+                                {ec.phone && <p className="text-[10px] text-slate-500">{ec.phone}</p>}
+                              </div>
+                            </div>
+                          ))}
+                          <button onClick={() => handleEnrichContact(selectedContact)} disabled={isEnriching} className="w-full flex items-center justify-center gap-1 px-3 py-1.5 bg-white/5 text-novalyte-400 rounded-md text-[11px] font-medium hover:bg-white/[0.08] border border-white/[0.06]">
+                            <RefreshCw className={cn('w-3 h-3', isEnriching && 'animate-spin')} /> Re-enrich Contacts
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          {selectedContact.clinic.ownerName && (
+                            <div className="flex items-center justify-between p-2 bg-novalyte-500/10 rounded-lg">
+                              <div><p className="font-medium text-slate-300">{selectedContact.clinic.ownerName}</p><p className="text-[10px] text-slate-500">Owner / Director</p></div>
+                              {selectedContact.clinic.ownerEmail && <a href={`mailto:${selectedContact.clinic.ownerEmail}`} className="text-novalyte-400 hover:underline text-[11px]">{selectedContact.clinic.ownerEmail}</a>}
+                            </div>
+                          )}
+                          {selectedContact.clinic.managerName && selectedContact.clinic.managerName !== selectedContact.clinic.ownerName && (
+                            <div className="flex items-center justify-between p-2 bg-white/[0.03] rounded-lg">
+                              <div><p className="font-medium text-slate-300">{selectedContact.clinic.managerName}</p><p className="text-[10px] text-slate-500">Manager</p></div>
+                              {selectedContact.clinic.managerEmail && <a href={`mailto:${selectedContact.clinic.managerEmail}`} className="text-novalyte-400 hover:underline text-[11px]">{selectedContact.clinic.managerEmail}</a>}
+                            </div>
+                          )}
+                          {!selectedContact.clinic.ownerName && !selectedContact.clinic.managerName && <p className="text-slate-500 text-[11px]">No contacts found yet. Click Enrich to search.</p>}
+                        </>
                       )}
-                      {selectedContact.clinic.managerName && selectedContact.clinic.managerName !== selectedContact.clinic.ownerName && (
-                        <div className="flex items-center justify-between p-2 bg-white/[0.03] rounded-lg">
-                          <div><p className="font-medium text-slate-300">{selectedContact.clinic.managerName}</p><p className="text-[10px] text-slate-500">Manager</p></div>
-                          {selectedContact.clinic.managerEmail && <a href={`mailto:${selectedContact.clinic.managerEmail}`} className="text-novalyte-400 hover:underline text-[11px]">{selectedContact.clinic.managerEmail}</a>}
-                        </div>
-                      )}
-                      {!selectedContact.clinic.ownerName && !selectedContact.clinic.managerName && <p className="text-slate-500 text-[11px]">No contacts found yet. Click Enrich to search.</p>}
                     </div>
                   </Section>
 

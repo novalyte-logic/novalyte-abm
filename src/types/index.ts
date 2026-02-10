@@ -76,6 +76,8 @@ export interface EnrichedContact {
   confidence: number; // 0-100
   source: string;
   enrichedAt: string;
+  emailVerified?: boolean;
+  emailVerificationStatus?: 'valid' | 'invalid' | 'risky' | 'unknown';
 }
 
 // Clinic information
@@ -134,6 +136,8 @@ export interface DecisionMaker {
   confidence: number; // 0-100
   enrichedAt?: Date;
   source: DataSource;
+  emailVerified?: boolean;
+  emailVerificationStatus?: 'valid' | 'invalid' | 'risky' | 'unknown';
 }
 
 export type DecisionMakerRole = 

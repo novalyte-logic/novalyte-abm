@@ -32,6 +32,7 @@ export class EnrichmentService {
   private currentKeyIndex: number;
   private exhaustedKeys: Set<number>;
   private clearbitApiKey: string;
+  private revenueBaseKey: string;
 
   constructor(apolloKey?: string, clearbitKey?: string) {
     const metaEnv: any = (typeof import.meta !== 'undefined' && (import.meta as any).env) ? (import.meta as any).env : {};
@@ -50,6 +51,7 @@ export class EnrichmentService {
     this.currentKeyIndex = 0;
     this.exhaustedKeys = new Set();
     this.clearbitApiKey = clearbitKey || metaEnv?.VITE_CLEARBIT_API_KEY || '';
+    this.revenueBaseKey = metaEnv?.VITE_REVENUEBASE_API_KEY || '';
     
     if (this.apolloKeys.length > 1) {
       console.log(`[Apollo] ${this.apolloKeys.length} API keys loaded for rotation`);
@@ -162,6 +164,8 @@ export class EnrichmentService {
             confidence: candidate.confidence,
             enrichedAt: new Date(),
             source: (candidate.source === 'exa_scrape' ? 'website_scrape' : candidate.source === 'gemini_extract' ? 'website_scrape' : 'manual') as DataSource,
+            emailVerified: candidate.verified,
+            emailVerificationStatus: candidate.verificationStatus,
           });
         }
       }
@@ -185,7 +189,68 @@ export class EnrichmentService {
       });
     }
 
+    // ── Verify all emails via RevenueBase before returning ──
+    await this.verifyEmails(decisionMakers);
+
     return decisionMakers;
+  }
+
+  /**
+   * Verify all decision maker emails via RevenueBase
+   * Marks each DM with emailVerified + emailVerificationStatus
+   * Adjusts confidence scores based on verification result
+   */
+  private async verifyEmails(dms: DecisionMaker[]): Promise<void> {
+    if (!this.revenueBaseKey) return;
+    const withEmail = dms.filter(d => d.email && !d.emailVerified);
+    if (!withEmail.length) return;
+
+    const verifyOne = async (dm: DecisionMaker) => {
+      try {
+        const response = await axios.post(
+          'https://api.revenuebase.ai/v1/process-email',
+          { email: dm.email },
+          { headers: { 'x-key': this.revenueBaseKey, 'Content-Type': 'application/json' }, timeout: 10000 }
+        );
+        const data = response.data;
+        dm.emailVerified = true;
+        const status = (data.status || data.result || data.verification_status || '').toLowerCase();
+        if (status === 'valid' || status === 'deliverable' || status === 'safe') {
+          dm.emailVerificationStatus = 'valid';
+          dm.confidence = Math.min(dm.confidence + 20, 99);
+        } else if (status === 'invalid' || status === 'undeliverable' || status === 'bounce') {
+          dm.emailVerificationStatus = 'invalid';
+          dm.confidence = Math.max(dm.confidence - 30, 5);
+        } else if (status === 'risky' || status === 'catch-all' || status === 'catch_all' || status === 'accept_all') {
+          dm.emailVerificationStatus = 'risky';
+          dm.confidence = Math.min(dm.confidence + 5, 80);
+        } else {
+          dm.emailVerificationStatus = 'unknown';
+        }
+      } catch (err: any) {
+        if (err?.response?.status === 422 || err?.response?.status === 400) {
+          dm.emailVerified = true;
+          dm.emailVerificationStatus = 'invalid';
+          dm.confidence = Math.max(dm.confidence - 30, 5);
+        } else {
+          dm.emailVerified = false;
+          dm.emailVerificationStatus = 'unknown';
+        }
+      }
+    };
+
+    // Verify in parallel batches of 3
+    for (let i = 0; i < withEmail.length; i += 3) {
+      await Promise.all(withEmail.slice(i, i + 3).map(verifyOne));
+    }
+
+    // Re-sort: verified valid first, then by confidence
+    dms.sort((a, b) => {
+      const aV = a.emailVerificationStatus === 'valid' ? 100 : a.emailVerificationStatus === 'risky' ? 50 : 0;
+      const bV = b.emailVerificationStatus === 'valid' ? 100 : b.emailVerificationStatus === 'risky' ? 50 : 0;
+      if (aV !== bV) return bV - aV;
+      return b.confidence - a.confidence;
+    });
   }
 
   /**
