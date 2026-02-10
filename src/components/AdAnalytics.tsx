@@ -44,6 +44,7 @@ interface PageEvent {
   event_type: string;
   event_data: Record<string, any>;
   utm_source: string | null;
+  utm_medium: string | null;
   utm_campaign: string | null;
   gclid: string | null;
   geo_state: string | null;
@@ -630,6 +631,9 @@ export default function AdAnalytics() {
         </div>
       </div>
 
+      {/* ═══ DETAILED TRAFFIC SOURCES ═══ */}
+      <TrafficSourcesDetail leads={leads} pageEvents={pageEvents} />
+
       {/* Recent Leads Table */}
       <div className="glass-card p-4">
         <h2 className="text-sm font-semibold text-slate-200 mb-3 flex items-center gap-2">
@@ -1023,6 +1027,259 @@ function TrafficMap({ locations, apiKey }: { locations: GeoLocation[]; apiKey: s
             <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-cyan-400 inline-block" /> With leads</span>
             <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-cyan-300/50 inline-block" /> Visitors only</span>
             <span>Larger = more traffic</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Detailed Traffic Sources Component ─── */
+
+function TrafficSourcesDetail({ leads, pageEvents }: { leads: LeadWithAttribution[]; pageEvents: PageEvent[] }) {
+  // Combine data from leads and page events for comprehensive source analysis
+  const allSources = useMemo(() => {
+    const sourceMap = new Map<string, { sessions: number; leads: number; conversions: number }>();
+    
+    // From page events (sessions)
+    const sessionSources = new Map<string, string>();
+    pageEvents.forEach(e => {
+      if (!sessionSources.has(e.session_id)) {
+        const source = e.gclid ? 'google / cpc' : 
+          e.utm_source && e.utm_medium ? `${e.utm_source} / ${e.utm_medium}` :
+          e.utm_source ? `${e.utm_source} / (none)` : 'direct / (none)';
+        sessionSources.set(e.session_id, source);
+      }
+    });
+    sessionSources.forEach(source => {
+      const ex = sourceMap.get(source) || { sessions: 0, leads: 0, conversions: 0 };
+      ex.sessions++;
+      sourceMap.set(source, ex);
+    });
+
+    // From leads
+    leads.forEach(l => {
+      const source = l.gclid ? 'google / cpc' :
+        l.utm_source && l.utm_medium ? `${l.utm_source} / ${l.utm_medium}` :
+        l.utm_source ? `${l.utm_source} / (none)` : 'direct / (none)';
+      const ex = sourceMap.get(source) || { sessions: 0, leads: 0, conversions: 0 };
+      ex.leads++;
+      if (l.status !== 'new') ex.conversions++;
+      sourceMap.set(source, ex);
+    });
+
+    return Array.from(sourceMap.entries())
+      .map(([source, data]) => ({ source, ...data }))
+      .sort((a, b) => b.leads - a.leads || b.sessions - a.sessions);
+  }, [leads, pageEvents]);
+
+  // UTM Campaigns breakdown
+  const campaigns = useMemo(() => {
+    const map = new Map<string, { sessions: number; leads: number }>();
+    const sessionCampaigns = new Map<string, string>();
+    pageEvents.forEach(e => {
+      if (e.utm_campaign && !sessionCampaigns.has(e.session_id)) {
+        sessionCampaigns.set(e.session_id, e.utm_campaign);
+      }
+    });
+    sessionCampaigns.forEach(campaign => {
+      const ex = map.get(campaign) || { sessions: 0, leads: 0 };
+      ex.sessions++;
+      map.set(campaign, ex);
+    });
+    leads.forEach(l => {
+      if (l.utm_campaign) {
+        const ex = map.get(l.utm_campaign) || { sessions: 0, leads: 0 };
+        ex.leads++;
+        map.set(l.utm_campaign, ex);
+      }
+    });
+    return Array.from(map.entries())
+      .map(([campaign, data]) => ({ campaign, ...data }))
+      .sort((a, b) => b.leads - a.leads || b.sessions - a.sessions)
+      .slice(0, 10);
+  }, [leads, pageEvents]);
+
+  // UTM Terms (keywords)
+  const keywords = useMemo(() => {
+    const map = new Map<string, { sessions: number; leads: number }>();
+    const sessionTerms = new Map<string, string>();
+    pageEvents.forEach(e => {
+      const term = (e.event_data as any)?.utm_term;
+      if (term && !sessionTerms.has(e.session_id)) {
+        sessionTerms.set(e.session_id, term);
+      }
+    });
+    sessionTerms.forEach(term => {
+      const ex = map.get(term) || { sessions: 0, leads: 0 };
+      ex.sessions++;
+      map.set(term, ex);
+    });
+    leads.forEach(l => {
+      if (l.utm_term) {
+        const ex = map.get(l.utm_term) || { sessions: 0, leads: 0 };
+        ex.leads++;
+        map.set(l.utm_term, ex);
+      }
+    });
+    return Array.from(map.entries())
+      .map(([keyword, data]) => ({ keyword, ...data }))
+      .sort((a, b) => b.leads - a.leads || b.sessions - a.sessions)
+      .slice(0, 10);
+  }, [leads, pageEvents]);
+
+  // Referrers
+  const referrers = useMemo(() => {
+    const map = new Map<string, { sessions: number; leads: number }>();
+    const sessionRefs = new Map<string, string>();
+    pageEvents.forEach(e => {
+      const ref = (e.event_data as any)?.referrer;
+      if (ref && !sessionRefs.has(e.session_id)) {
+        try {
+          const domain = new URL(ref).hostname.replace('www.', '');
+          sessionRefs.set(e.session_id, domain);
+        } catch { sessionRefs.set(e.session_id, ref); }
+      }
+    });
+    sessionRefs.forEach(ref => {
+      const ex = map.get(ref) || { sessions: 0, leads: 0 };
+      ex.sessions++;
+      map.set(ref, ex);
+    });
+    leads.forEach(l => {
+      if (l.referrer) {
+        try {
+          const domain = new URL(l.referrer).hostname.replace('www.', '');
+          const ex = map.get(domain) || { sessions: 0, leads: 0 };
+          ex.leads++;
+          map.set(domain, ex);
+        } catch {}
+      }
+    });
+    return Array.from(map.entries())
+      .map(([referrer, data]) => ({ referrer, ...data }))
+      .filter(r => r.referrer !== 'ads.novalyte.io' && r.referrer !== 'novalyte.io')
+      .sort((a, b) => b.leads - a.leads || b.sessions - a.sessions)
+      .slice(0, 8);
+  }, [leads, pageEvents]);
+
+  // Landing pages
+  const landingPages = useMemo(() => {
+    const map = new Map<string, { sessions: number; leads: number }>();
+    const sessionPages = new Map<string, string>();
+    pageEvents.forEach(e => {
+      const page = (e.event_data as any)?.landing_page || (e.event_data as any)?.page;
+      if (page && !sessionPages.has(e.session_id)) {
+        sessionPages.set(e.session_id, page);
+      }
+    });
+    sessionPages.forEach(page => {
+      const ex = map.get(page) || { sessions: 0, leads: 0 };
+      ex.sessions++;
+      map.set(page, ex);
+    });
+    leads.forEach(l => {
+      if (l.landing_page) {
+        const ex = map.get(l.landing_page) || { sessions: 0, leads: 0 };
+        ex.leads++;
+        map.set(l.landing_page, ex);
+      }
+    });
+    return Array.from(map.entries())
+      .map(([page, data]) => ({ page, ...data }))
+      .sort((a, b) => b.leads - a.leads || b.sessions - a.sessions)
+      .slice(0, 6);
+  }, [leads, pageEvents]);
+
+  return (
+    <div className="glass-card p-4">
+      <h2 className="text-sm font-semibold text-slate-200 mb-4 flex items-center gap-2">
+        <Globe className="w-4 h-4 text-novalyte-400" />
+        Traffic Sources Detail
+        <span className="text-[10px] text-slate-500 font-normal ml-1">Where your visitors come from</span>
+      </h2>
+
+      <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Source / Medium */}
+        <div>
+          <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium mb-2">Source / Medium</p>
+          <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
+            {allSources.length === 0 && <p className="text-[10px] text-slate-600 py-2">No data yet</p>}
+            {allSources.slice(0, 8).map(s => {
+              return (
+                <div key={s.source} className="flex items-center gap-2 p-1.5 bg-white/[0.02] rounded-lg">
+                  <div className={cn('w-1.5 h-1.5 rounded-full shrink-0',
+                    s.source.includes('google') ? 'bg-emerald-400' :
+                    s.source.includes('facebook') || s.source.includes('meta') ? 'bg-blue-400' :
+                    s.source === 'direct / (none)' ? 'bg-slate-500' : 'bg-amber-400'
+                  )} />
+                  <span className="text-[10px] text-slate-300 flex-1 truncate">{s.source}</span>
+                  <span className="text-[9px] text-slate-500">{s.sessions}s</span>
+                  {s.leads > 0 && <span className="text-[9px] text-novalyte-400 font-semibold">{s.leads}L</span>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Campaigns */}
+        <div>
+          <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium mb-2">Campaigns</p>
+          <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
+            {campaigns.length === 0 && <p className="text-[10px] text-slate-600 py-2">No UTM campaigns tracked</p>}
+            {campaigns.map(c => (
+              <div key={c.campaign} className="flex items-center gap-2 p-1.5 bg-white/[0.02] rounded-lg">
+                <span className="text-[10px] text-slate-300 flex-1 truncate">{c.campaign}</span>
+                <span className="text-[9px] text-slate-500">{c.sessions}s</span>
+                {c.leads > 0 && <span className="text-[9px] text-novalyte-400 font-semibold">{c.leads}L</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Keywords */}
+        <div>
+          <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium mb-2">Keywords (utm_term)</p>
+          <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
+            {keywords.length === 0 && <p className="text-[10px] text-slate-600 py-2">No keywords tracked</p>}
+            {keywords.map(k => (
+              <div key={k.keyword} className="flex items-center gap-2 p-1.5 bg-white/[0.02] rounded-lg">
+                <span className="text-[10px] text-slate-300 flex-1 truncate">{k.keyword}</span>
+                <span className="text-[9px] text-slate-500">{k.sessions}s</span>
+                {k.leads > 0 && <span className="text-[9px] text-novalyte-400 font-semibold">{k.leads}L</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Referrers */}
+        <div>
+          <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium mb-2">Referrers</p>
+          <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
+            {referrers.length === 0 && <p className="text-[10px] text-slate-600 py-2">No referrer data</p>}
+            {referrers.map(r => (
+              <div key={r.referrer} className="flex items-center gap-2 p-1.5 bg-white/[0.02] rounded-lg">
+                <span className="text-[10px] text-slate-300 flex-1 truncate">{r.referrer}</span>
+                <span className="text-[9px] text-slate-500">{r.sessions}s</span>
+                {r.leads > 0 && <span className="text-[9px] text-novalyte-400 font-semibold">{r.leads}L</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Landing Pages Row */}
+      {landingPages.length > 0 && (
+        <div className="mt-4 pt-4 border-t border-white/[0.04]">
+          <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium mb-2">Landing Pages</p>
+          <div className="flex flex-wrap gap-2">
+            {landingPages.map(p => (
+              <div key={p.page} className="px-2 py-1 bg-white/[0.03] rounded-lg border border-white/[0.04]">
+                <span className="text-[10px] text-slate-300">{p.page}</span>
+                <span className="text-[9px] text-slate-500 ml-2">{p.sessions}s</span>
+                {p.leads > 0 && <span className="text-[9px] text-novalyte-400 font-semibold ml-1">{p.leads}L</span>}
+              </div>
+            ))}
           </div>
         </div>
       )}
