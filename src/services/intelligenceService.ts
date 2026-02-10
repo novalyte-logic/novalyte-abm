@@ -111,7 +111,7 @@ function escHtml(s: string): string {
    Day 1: Intro → Day 3: Follow-up (if no open) → Day 7: Breakup
    ═══════════════════════════════════════════════════════════════ */
 
-export type SequenceStep = 'intro' | 'follow_up' | 'breakup' | 'completed' | 'replied' | 'opted_out';
+export type SequenceStep = 'intro' | 'follow_up' | 'phone_call' | 'value_add' | 'breakup' | 'completed' | 'replied' | 'opted_out';
 
 export interface ContactSequence {
   contactId: string;

@@ -5,10 +5,14 @@ import {
   Loader2, BarChart3, Radio, Inbox, MailOpen, MailX,
   Sparkles, Zap, X, ChevronDown, Edit3, Wand2, Users,
   ShieldCheck, ShieldAlert, ShieldX, Trash2,
+  Upload, PenLine, Filter, ArrowUpDown, Plus,
+  CheckSquare, Square, MinusSquare,
+  Phone, Play, Pause, StopCircle, Eye,
 } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
 import { resendService, SentEmail, EmailEvent } from '../services/resendService';
 import { generatePersonalizedEmail, getSequenceQueue, computeSequenceState, SequenceStep } from '../services/intelligenceService';
+import { voiceAgentService } from '../services/voiceAgentService';
 import { CRMContact } from '../types';
 import { cn } from '../utils/cn';
 import toast from 'react-hot-toast';
@@ -16,7 +20,7 @@ import { format, formatDistanceToNow } from 'date-fns';
 import axios from 'axios';
 
 /* ─── Types ─── */
-type Tab = 'compose' | 'sequences' | 'stream' | 'analytics';
+type Tab = 'compose' | 'manual' | 'sequences' | 'stream' | 'analytics';
 
 const eventConfig: Record<EmailEvent, { label: string; color: string; icon: typeof Mail; bg: string }> = {
   sent: { label: 'Sent', color: 'text-slate-400', icon: Send, bg: 'bg-white/5' },
@@ -185,16 +189,17 @@ export default function EmailOutreach() {
 
       {/* Tabs */}
       <div className="flex items-center gap-1 p-1 bg-white/[0.03] rounded-lg border border-white/[0.06] overflow-x-auto scrollbar-hide sm:w-fit">
-        {(['compose', 'sequences', 'stream', 'analytics'] as Tab[]).map(t => (
+        {(['compose', 'manual', 'sequences', 'stream', 'analytics'] as Tab[]).map(t => (
           <button key={t} onClick={() => setTab(t)} className={cn(
             'px-3 sm:px-4 py-2 rounded-md text-xs sm:text-sm font-medium transition-all flex items-center gap-1.5 sm:gap-2 whitespace-nowrap shrink-0',
             tab === t ? 'bg-novalyte-500/20 text-novalyte-300' : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.03]'
           )}>
             {t === 'compose' && <Sparkles className="w-4 h-4" />}
+            {t === 'manual' && <PenLine className="w-4 h-4" />}
             {t === 'sequences' && <Zap className="w-4 h-4" />}
             {t === 'stream' && <Inbox className="w-4 h-4" />}
             {t === 'analytics' && <BarChart3 className="w-4 h-4" />}
-            {t === 'compose' ? 'AI Compose' : t.charAt(0).toUpperCase() + t.slice(1)}
+            {t === 'compose' ? 'AI Compose' : t === 'manual' ? 'Manual Compose' : t.charAt(0).toUpperCase() + t.slice(1)}
             {t === 'stream' && sentEmails.length > 0 && (
               <span className="text-xs px-1.5 py-0.5 rounded-full bg-white/10 text-slate-400">{sentEmails.length}</span>
             )}
@@ -205,6 +210,16 @@ export default function EmailOutreach() {
       {/* Tab Content */}
       {tab === 'compose' && (
         <ComposeTab
+          contacts={contacts}
+          sentEmails={sentEmails}
+          addSentEmails={addSentEmails}
+          updateContact={updateContact}
+          isConfigured={isConfigured}
+          remaining={stats.remaining}
+        />
+      )}
+      {tab === 'manual' && (
+        <ManualComposeTab
           contacts={contacts}
           sentEmails={sentEmails}
           addSentEmails={addSentEmails}
@@ -267,6 +282,11 @@ function ComposeTab({
   const [verifications, setVerifications] = useState<Map<string, EmailVerification>>(new Map());
   const [verifying, setVerifying] = useState(false);
   const [verifyProgress, setVerifyProgress] = useState({ done: 0, total: 0 });
+  const [showImport, setShowImport] = useState(false);
+  const [importText, setImportText] = useState('');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'verified' | 'risky' | 'unverified'>('all');
+  const [sortBy, setSortBy] = useState<'score' | 'name' | 'city' | 'confidence'>('score');
+
   // Eligible contacts: have email, not emailed today
   const eligible = useMemo(() => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -278,17 +298,35 @@ function ComposeTab({
       .sort((a, b) => b.score - a.score);
   }, [contacts, sentEmails]);
 
-  // Filtered for dropdown search
+  // Filtered for dropdown search + status filter + sort
   const filtered = useMemo(() => {
-    if (!search) return eligible;
-    const q = search.toLowerCase();
-    return eligible.filter(c =>
-      c.clinic.name.toLowerCase().includes(q) ||
-      c.clinic.address.city.toLowerCase().includes(q) ||
-      c.clinic.address.state.toLowerCase().includes(q) ||
-      (c.decisionMaker && `${c.decisionMaker.firstName} ${c.decisionMaker.lastName}`.toLowerCase().includes(q))
-    );
-  }, [eligible, search]);
+    let list = eligible;
+    if (search) {
+      const q = search.toLowerCase();
+      list = list.filter(c =>
+        c.clinic.name.toLowerCase().includes(q) ||
+        c.clinic.address.city.toLowerCase().includes(q) ||
+        c.clinic.address.state.toLowerCase().includes(q) ||
+        (getContactEmail(c) || '').toLowerCase().includes(q) ||
+        (c.decisionMaker && `${c.decisionMaker.firstName} ${c.decisionMaker.lastName}`.toLowerCase().includes(q))
+      );
+    }
+    if (filterStatus !== 'all') {
+      list = list.filter(c => {
+        const { status } = getEmailConfidence(c, verifications);
+        if (filterStatus === 'verified') return status === 'valid';
+        if (filterStatus === 'risky') return status === 'risky';
+        if (filterStatus === 'unverified') return status === 'unknown';
+        return true;
+      });
+    }
+    const sorted = [...list];
+    if (sortBy === 'name') sorted.sort((a, b) => a.clinic.name.localeCompare(b.clinic.name));
+    else if (sortBy === 'city') sorted.sort((a, b) => a.clinic.address.city.localeCompare(b.clinic.address.city));
+    else if (sortBy === 'confidence') sorted.sort((a, b) => getEmailConfidence(b, verifications).score - getEmailConfidence(a, verifications).score);
+    else sorted.sort((a, b) => b.score - a.score);
+    return sorted;
+  }, [eligible, search, filterStatus, sortBy, verifications]);
 
   const selectedContacts = useMemo(() =>
     eligible.filter(c => selectedIds.has(c.id)),
@@ -308,9 +346,55 @@ function ComposeTab({
     setDropdownOpen(false);
   };
 
-  const clearAll = () => {
+  const selectAllFiltered = () => {
+    setSelectedIds(prev => {
+      const s = new Set(prev);
+      filtered.slice(0, 100).forEach(c => s.add(c.id));
+      return s;
+    });
+  };
+
+  const unselectAll = () => {
     setSelectedIds(new Set());
-    setDrafts(new Map());
+  };
+
+  const invertSelection = () => {
+    setSelectedIds(prev => {
+      const s = new Set<string>();
+      eligible.forEach(c => { if (!prev.has(c.id)) s.add(c.id); });
+      return s;
+    });
+  };
+
+  const selectVerifiedOnly = () => {
+    setSelectedIds(new Set(
+      eligible.filter(c => {
+        const { status } = getEmailConfidence(c, verifications);
+        return status === 'valid';
+      }).slice(0, 100).map(c => c.id)
+    ));
+  };
+
+  /* ── Import Emails ── */
+  const handleImportEmails = () => {
+    if (!importText.trim()) return;
+    const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+    const imported = [...new Set((importText.match(emailRegex) || []).map(e => e.toLowerCase()))];
+    if (imported.length === 0) { toast.error('No valid email addresses found'); return; }
+    // Match imported emails to existing contacts
+    let matched = 0;
+    const newSelected = new Set(selectedIds);
+    for (const email of imported) {
+      const contact = eligible.find(c => {
+        const ce = getContactEmail(c);
+        return ce && ce.toLowerCase() === email;
+      });
+      if (contact) { newSelected.add(contact.id); matched++; }
+    }
+    setSelectedIds(newSelected);
+    setShowImport(false);
+    setImportText('');
+    toast.success(`Imported ${imported.length} emails — ${matched} matched to CRM contacts, ${imported.length - matched} not in CRM`);
   };
 
   /* ── Email Verification ── */
@@ -537,12 +621,11 @@ function ComposeTab({
               {selectedIds.size} selected · {eligible.length} eligible
             </span>
           </div>
-          <div className="flex items-center gap-3">
-            {selectedIds.size > 0 && (
-              <button onClick={clearAll} className="text-xs text-slate-500 hover:text-slate-300 transition-colors">Clear all</button>
-            )}
-            <button onClick={selectAllClinics} className="text-xs text-novalyte-400 hover:text-novalyte-300 transition-colors font-medium">
-              Select all ({Math.min(eligible.length, 100)})
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowImport(!showImport)}
+              className={cn('flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium border transition-all',
+                showImport ? 'bg-novalyte-500/20 text-novalyte-300 border-novalyte-500/30' : 'bg-white/[0.03] text-slate-400 border-white/[0.06] hover:bg-white/[0.06]')}>
+              <Upload className="w-3 h-3" /> Import
             </button>
             <button onClick={() => setDropdownOpen(!dropdownOpen)}
               className={cn('flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border',
@@ -555,6 +638,70 @@ function ComposeTab({
             </button>
           </div>
         </div>
+
+        {/* Selection controls bar */}
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          {/* Select / Deselect */}
+          <div className="flex items-center rounded-lg border border-white/[0.06] overflow-hidden">
+            <button onClick={selectAllClinics} className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] text-slate-400 hover:text-novalyte-300 hover:bg-white/[0.04] transition-all border-r border-white/[0.06]">
+              <CheckSquare className="w-3 h-3" /> All
+            </button>
+            <button onClick={unselectAll} className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] text-slate-400 hover:text-slate-200 hover:bg-white/[0.04] transition-all border-r border-white/[0.06]">
+              <Square className="w-3 h-3" /> None
+            </button>
+            <button onClick={invertSelection} className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] text-slate-400 hover:text-slate-200 hover:bg-white/[0.04] transition-all border-r border-white/[0.06]">
+              <MinusSquare className="w-3 h-3" /> Invert
+            </button>
+            <button onClick={selectVerifiedOnly} className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] text-emerald-400/70 hover:text-emerald-400 hover:bg-emerald-500/5 transition-all">
+              <ShieldCheck className="w-3 h-3" /> Verified Only
+            </button>
+          </div>
+          {dropdownOpen && (
+            <button onClick={selectAllFiltered} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] text-novalyte-400 hover:text-novalyte-300 bg-novalyte-500/5 hover:bg-novalyte-500/10 border border-novalyte-500/20 transition-all">
+              <CheckSquare className="w-3 h-3" /> Select Filtered ({Math.min(filtered.length, 100)})
+            </button>
+          )}
+          {/* Filter */}
+          <div className="flex items-center gap-1 ml-auto">
+            <Filter className="w-3 h-3 text-slate-600" />
+            <select value={filterStatus} onChange={e => setFilterStatus(e.target.value as any)}
+              className="bg-white/[0.03] border border-white/[0.06] rounded-lg text-[11px] text-slate-400 px-2 py-1.5 outline-none focus:border-novalyte-500/30">
+              <option value="all">All Statuses</option>
+              <option value="verified">Verified Only</option>
+              <option value="risky">Risky Only</option>
+              <option value="unverified">Unverified Only</option>
+            </select>
+            <ArrowUpDown className="w-3 h-3 text-slate-600 ml-1" />
+            <select value={sortBy} onChange={e => setSortBy(e.target.value as any)}
+              className="bg-white/[0.03] border border-white/[0.06] rounded-lg text-[11px] text-slate-400 px-2 py-1.5 outline-none focus:border-novalyte-500/30">
+              <option value="score">Sort: Score</option>
+              <option value="name">Sort: Name</option>
+              <option value="city">Sort: City</option>
+              <option value="confidence">Sort: Email Confidence</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Import panel */}
+        {showImport && (
+          <div className="mb-4 p-4 rounded-xl bg-white/[0.02] border border-white/[0.06] space-y-3">
+            <div className="flex items-center gap-2">
+              <Upload className="w-4 h-4 text-novalyte-400" />
+              <h4 className="text-xs font-semibold text-slate-200">Import Email Addresses</h4>
+            </div>
+            <p className="text-[10px] text-slate-500">Paste email addresses below (one per line, comma-separated, or mixed text — we'll extract all valid emails). Imported emails will be matched to existing CRM contacts.</p>
+            <textarea value={importText} onChange={e => setImportText(e.target.value)}
+              placeholder="john@clinic.com, jane@medspa.com&#10;dr.smith@health.com&#10;Or paste any text containing email addresses..."
+              rows={4}
+              className="w-full px-3 py-2 rounded-lg bg-white/[0.03] border border-white/[0.08] text-sm text-slate-200 placeholder:text-slate-600 outline-none focus:border-novalyte-500/30 resize-y font-mono" />
+            <div className="flex items-center gap-2 justify-end">
+              <button onClick={() => { setShowImport(false); setImportText(''); }} className="btn btn-secondary text-xs">Cancel</button>
+              <button onClick={handleImportEmails} disabled={!importText.trim()} className="btn btn-primary text-xs gap-1">
+                <Upload className="w-3.5 h-3.5" /> Import & Match
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Verification bar */}
         {selectedIds.size > 0 && (
@@ -909,158 +1056,1014 @@ function ComposeTab({
 
 
 /* ═══════════════════════════════════════════════════════════════
-   SEQUENCES TAB — Smart sequencing engine view
+   MANUAL COMPOSE TAB — Write your own email to any address
    ═══════════════════════════════════════════════════════════════ */
 
-const stepConfig: Record<SequenceStep, { label: string; color: string; bg: string }> = {
-  intro: { label: 'Intro', color: 'text-blue-400', bg: 'bg-blue-500/10' },
-  follow_up: { label: 'Follow-Up', color: 'text-amber-400', bg: 'bg-amber-500/10' },
-  breakup: { label: 'Breakup', color: 'text-red-400', bg: 'bg-red-500/10' },
-  completed: { label: 'Completed', color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
-  replied: { label: 'Engaged', color: 'text-violet-400', bg: 'bg-violet-500/10' },
-  opted_out: { label: 'Opted Out', color: 'text-slate-500', bg: 'bg-white/5' },
-};
+function ManualComposeTab({
+  contacts, addSentEmails, updateContact, isConfigured, remaining,
+}: {
+  contacts: CRMContact[];
+  sentEmails: SentEmail[];
+  addSentEmails: (emails: SentEmail[]) => void;
+  updateContact: (id: string, updates: Partial<CRMContact>) => void;
+  isConfigured: boolean;
+  remaining: number;
+}) {
+  const [toEmail, setToEmail] = useState('');
+  const [toEmails, setToEmails] = useState<string[]>([]);
+  const [subject, setSubject] = useState('');
+  const [body, setBody] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sendProgress, setSendProgress] = useState({ sent: 0, total: 0 });
+  const [showBulkImport, setShowBulkImport] = useState(false);
+  const [bulkText, setBulkText] = useState('');
 
-function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEmails: SentEmail[] }) {
-  const sequenceQueue = useMemo(() => getSequenceQueue(contacts, sentEmails), [contacts, sentEmails]);
+  const addEmail = () => {
+    const email = toEmail.trim().toLowerCase();
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { toast.error('Enter a valid email address'); return; }
+    if (toEmails.includes(email)) { toast.error('Email already added'); return; }
+    setToEmails(prev => [...prev, email]);
+    setToEmail('');
+  };
 
-  const allSequences = useMemo(() => {
-    return contacts
-      .filter(c => {
-        const email = c.decisionMaker?.email || c.clinic.email;
-        return !!email;
-      })
-      .map(c => ({
-        contact: c,
-        sequence: computeSequenceState(c.id, sentEmails),
-      }))
-      .sort((a, b) => {
-        const order: Record<SequenceStep, number> = { intro: 0, follow_up: 1, breakup: 2, replied: 3, completed: 4, opted_out: 5 };
-        return (order[a.sequence.currentStep] ?? 5) - (order[b.sequence.currentStep] ?? 5);
-      });
-  }, [contacts, sentEmails]);
+  const removeEmail = (email: string) => {
+    setToEmails(prev => prev.filter(e => e !== email));
+  };
 
-  const seqStats = useMemo(() => {
-    const counts: Record<SequenceStep, number> = { intro: 0, follow_up: 0, breakup: 0, completed: 0, replied: 0, opted_out: 0 };
-    for (const s of allSequences) counts[s.sequence.currentStep] = (counts[s.sequence.currentStep] || 0) + 1;
-    return counts;
-  }, [allSequences]);
+  const handleBulkImport = () => {
+    const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+    const found = [...new Set((bulkText.match(emailRegex) || []).map(e => e.toLowerCase()))];
+    if (found.length === 0) { toast.error('No valid emails found'); return; }
+    const existing = new Set(toEmails);
+    const newEmails = found.filter(e => !existing.has(e));
+    setToEmails(prev => [...prev, ...newEmails]);
+    setShowBulkImport(false);
+    setBulkText('');
+    toast.success(`Added ${newEmails.length} email${newEmails.length !== 1 ? 's' : ''}`);
+  };
+
+  const handleSend = async () => {
+    if (!isConfigured) { toast.error('Resend not configured'); return; }
+    if (toEmails.length === 0) { toast.error('Add at least one recipient'); return; }
+    if (!subject.trim()) { toast.error('Subject is required'); return; }
+    if (!body.trim()) { toast.error('Body is required'); return; }
+
+    setSending(true);
+    setSendProgress({ sent: 0, total: toEmails.length });
+    let successCount = 0;
+
+    const htmlBody = body.split('\n').map(l => l.trim()).filter(Boolean)
+      .map(l => `<p style="font-size:15px;line-height:1.7;margin:0 0 12px 0;">${l.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`)
+      .join('\n');
+    const html = `<div style="font-family:Inter,Arial,sans-serif;color:#1e293b;max-width:600px;margin:0 auto;padding:24px;">${htmlBody}</div>`;
+
+    for (let i = 0; i < toEmails.length; i++) {
+      const email = toEmails[i];
+      try {
+        // Try to match to a CRM contact
+        const contact = contacts.find(c => {
+          const ce = getContactEmail(c);
+          return ce && ce.toLowerCase() === email;
+        });
+
+        const result = await resendService.sendEmail({
+          to: email,
+          subject: subject.trim(),
+          html,
+          contactId: contact?.id || `manual-${Date.now()}-${i}`,
+          clinicName: contact?.clinic.name || email.split('@')[1] || 'Manual',
+          market: contact ? `${contact.clinic.marketZone.city}, ${contact.clinic.marketZone.state}` : 'Manual',
+          tags: [{ name: 'source', value: 'manual_compose' }],
+        });
+        addSentEmails([result]);
+
+        if (contact) {
+          updateContact(contact.id, {
+            lastContactedAt: new Date(),
+            activities: [...(contact.activities || []), {
+              id: `act-manual-${Date.now()}-${i}`, type: 'email_sent' as const,
+              description: `Manual email sent: "${subject}" to ${email}`,
+              timestamp: new Date(),
+              metadata: { resendId: result.id, manual: true },
+            }],
+          });
+        }
+        successCount++;
+      } catch (err: any) {
+        console.warn(`Send failed for ${email}:`, err);
+      }
+      setSendProgress({ sent: i + 1, total: toEmails.length });
+      if (i < toEmails.length - 1) await new Promise(r => setTimeout(r, 1200));
+    }
+
+    setSending(false);
+    if (successCount > 0) {
+      toast.success(`Sent ${successCount}/${toEmails.length} emails`);
+      setToEmails([]);
+      setSubject('');
+      setBody('');
+    } else {
+      toast.error('All sends failed');
+    }
+  };
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
-        {(Object.entries(seqStats) as [SequenceStep, number][]).map(([step, count]) => {
-          const cfg = stepConfig[step];
-          return (
-            <div key={step} className="glass-card p-3 text-center">
-              <p className={cn('text-xl font-bold tabular-nums', cfg.color)}>{count}</p>
-              <p className="text-[10px] text-slate-500">{cfg.label}</p>
-            </div>
-          );
-        })}
-      </div>
-
-      {sequenceQueue.length > 0 && (
-        <div className="glass-card overflow-hidden">
-          <div className="px-4 py-3 border-b border-white/[0.06] flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Zap className="w-4 h-4 text-amber-400" />
-              <h4 className="text-sm font-semibold text-slate-200">Ready to Send</h4>
-              <span className="text-xs px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-400">{sequenceQueue.length}</span>
-            </div>
-            <p className="text-[10px] text-slate-500">These contacts are due for their next sequence email</p>
-          </div>
-          <div className="divide-y divide-white/[0.03]">
-            {sequenceQueue.slice(0, 20).map(({ contact, step }) => {
-              const cfg = stepConfig[step];
-              const email = contact.decisionMaker?.email || contact.clinic.email || '';
-              return (
-                <div key={contact.id} className="px-4 py-3 flex items-center gap-3 hover:bg-white/[0.02] transition-all">
-                  <span className={cn('px-2 py-1 rounded text-[10px] font-medium', cfg.bg, cfg.color)}>{cfg.label}</span>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-slate-200 font-medium truncate">{contact.clinic.name}</p>
-                    <p className="text-[10px] text-slate-500">{email} · {contact.clinic.marketZone.city}, {contact.clinic.marketZone.state}</p>
-                  </div>
-                  <span className={cn('text-xs font-bold', contact.score >= 80 ? 'text-emerald-400' : contact.score >= 60 ? 'text-amber-400' : 'text-slate-500')}>{contact.score}</span>
-                </div>
-              );
-            })}
+      {!isConfigured && (
+        <div className="glass-card p-4 border-amber-500/20 flex items-center gap-3">
+          <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
+          <div>
+            <p className="text-sm text-amber-300 font-medium">Resend not configured</p>
+            <p className="text-xs text-slate-400">Add VITE_RESEND_API_KEY to .env to enable sending.</p>
           </div>
         </div>
       )}
 
-      <div className="glass-card overflow-hidden">
-        <div className="px-4 py-3 border-b border-white/[0.06]">
-          <h4 className="text-sm font-semibold text-slate-200">All Sequences ({allSequences.length})</h4>
-        </div>
-        {allSequences.length === 0 ? (
-          <div className="p-12 text-center">
-            <Zap className="w-10 h-10 text-slate-600 mx-auto mb-3" />
-            <p className="text-slate-400">No sequences yet</p>
-            <p className="text-xs text-slate-500 mt-1">Send emails from the Compose tab to start sequences</p>
+      {/* Recipients */}
+      <div className="glass-card p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Mail className="w-4 h-4 text-novalyte-400" />
+            <h3 className="text-sm font-semibold text-slate-200">Recipients</h3>
+            {toEmails.length > 0 && (
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/5 text-slate-500">{toEmails.length}</span>
+            )}
           </div>
-        ) : (
-          <div className="overflow-x-auto">
-          <table className="w-full min-w-[600px]">
-            <thead>
-              <tr className="border-b border-white/[0.06]">
-                <th className="text-left text-xs text-slate-500 font-medium px-4 py-3">Step</th>
-                <th className="text-left text-xs text-slate-500 font-medium px-4 py-3">Clinic</th>
-                <th className="text-left text-xs text-slate-500 font-medium px-4 py-3 hidden sm:table-cell">Contact</th>
-                <th className="text-left text-xs text-slate-500 font-medium px-4 py-3 hidden md:table-cell">Intro</th>
-                <th className="text-left text-xs text-slate-500 font-medium px-4 py-3 hidden md:table-cell">Follow-Up</th>
-                <th className="text-left text-xs text-slate-500 font-medium px-4 py-3 hidden lg:table-cell">Breakup</th>
-                <th className="text-left text-xs text-slate-500 font-medium px-4 py-3 hidden lg:table-cell">Next</th>
-              </tr>
-            </thead>
-            <tbody>
-              {allSequences.slice(0, 50).map(({ contact, sequence }) => {
-                const cfg = stepConfig[sequence.currentStep];
-                const dm = contact.decisionMaker;
-                return (
-                  <tr key={contact.id} className="border-b border-white/[0.03] hover:bg-white/[0.02] transition-all">
-                    <td className="px-4 py-2.5">
-                      <span className={cn('px-2 py-1 rounded text-[10px] font-medium', cfg.bg, cfg.color)}>{cfg.label}</span>
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <p className="text-sm text-slate-200 font-medium">{contact.clinic.name}</p>
-                      <p className="text-[10px] text-slate-500">{contact.clinic.marketZone.city}, {contact.clinic.marketZone.state}</p>
-                    </td>
-                    <td className="px-4 py-2.5 hidden sm:table-cell">
-                      {dm ? <span className="text-xs text-slate-300">{dm.firstName} {dm.lastName}</span> : <span className="text-xs text-slate-600">—</span>}
-                    </td>
-                    <td className="px-4 py-2.5 hidden md:table-cell">
-                      {sequence.introSentAt ? (
-                        <span className="text-[10px] text-emerald-400">{format(new Date(sequence.introSentAt), 'MMM d')}</span>
-                      ) : <span className="text-[10px] text-slate-600">—</span>}
-                    </td>
-                    <td className="px-4 py-2.5 hidden md:table-cell">
-                      {sequence.followUpSentAt ? (
-                        <span className="text-[10px] text-amber-400">{format(new Date(sequence.followUpSentAt), 'MMM d')}</span>
-                      ) : <span className="text-[10px] text-slate-600">—</span>}
-                    </td>
-                    <td className="px-4 py-2.5 hidden lg:table-cell">
-                      {sequence.breakupSentAt ? (
-                        <span className="text-[10px] text-red-400">{format(new Date(sequence.breakupSentAt), 'MMM d')}</span>
-                      ) : <span className="text-[10px] text-slate-600">—</span>}
-                    </td>
-                    <td className="px-4 py-2.5 hidden lg:table-cell">
-                      {sequence.pausedUntil ? (
-                        <span className="text-[10px] text-slate-400">{formatDistanceToNow(new Date(sequence.pausedUntil), { addSuffix: true })}</span>
-                      ) : sequence.currentStep === 'completed' || sequence.currentStep === 'replied' || sequence.currentStep === 'opted_out' ? (
-                        <span className="text-[10px] text-slate-600">Done</span>
-                      ) : (
-                        <span className="text-[10px] text-amber-400">Now</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowBulkImport(!showBulkImport)}
+              className={cn('flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium border transition-all',
+                showBulkImport ? 'bg-novalyte-500/20 text-novalyte-300 border-novalyte-500/30' : 'bg-white/[0.03] text-slate-400 border-white/[0.06] hover:bg-white/[0.06]')}>
+              <Upload className="w-3 h-3" /> Bulk Import
+            </button>
+            {toEmails.length > 0 && (
+              <button onClick={() => setToEmails([])} className="text-[11px] text-slate-500 hover:text-red-400 transition-colors">Clear All</button>
+            )}
+          </div>
+        </div>
+
+        {/* Add single email */}
+        <div className="flex items-center gap-2">
+          <input value={toEmail} onChange={e => setToEmail(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addEmail(); } }}
+            placeholder="Enter email address and press Enter..."
+            className="flex-1 px-3 py-2 rounded-lg bg-white/[0.03] border border-white/[0.08] text-sm text-slate-200 placeholder:text-slate-600 outline-none focus:border-novalyte-500/30" />
+          <button onClick={addEmail} className="btn btn-secondary text-xs gap-1">
+            <Plus className="w-3.5 h-3.5" /> Add
+          </button>
+        </div>
+
+        {/* Bulk import */}
+        {showBulkImport && (
+          <div className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.06] space-y-2">
+            <p className="text-[10px] text-slate-500">Paste emails — one per line, comma-separated, or any text containing emails.</p>
+            <textarea value={bulkText} onChange={e => setBulkText(e.target.value)}
+              placeholder="john@clinic.com, jane@medspa.com&#10;dr.smith@health.com"
+              rows={3}
+              className="w-full px-3 py-2 rounded-lg bg-white/[0.03] border border-white/[0.08] text-sm text-slate-200 placeholder:text-slate-600 outline-none focus:border-novalyte-500/30 resize-y font-mono" />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => { setShowBulkImport(false); setBulkText(''); }} className="btn btn-secondary text-xs">Cancel</button>
+              <button onClick={handleBulkImport} disabled={!bulkText.trim()} className="btn btn-primary text-xs gap-1">
+                <Upload className="w-3.5 h-3.5" /> Import
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Email chips */}
+        {toEmails.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {toEmails.map(email => {
+              const inCRM = contacts.some(c => { const ce = getContactEmail(c); return ce && ce.toLowerCase() === email; });
+              return (
+                <span key={email}
+                  className={cn('inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium ring-1',
+                    inCRM ? 'bg-novalyte-500/10 text-novalyte-300 ring-novalyte-500/20' : 'bg-white/[0.03] text-slate-400 ring-white/[0.08]')}>
+                  {inCRM && <CheckCircle className="w-3 h-3 text-emerald-400" />}
+                  {email}
+                  <X className="w-3 h-3 cursor-pointer hover:text-red-400 transition-colors" onClick={() => removeEmail(email)} />
+                </span>
+              );
+            })}
           </div>
         )}
       </div>
+
+      {/* Compose */}
+      <div className="glass-card p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <PenLine className="w-4 h-4 text-novalyte-400" />
+          <h3 className="text-sm font-semibold text-slate-200">Compose Email</h3>
+        </div>
+
+        <div>
+          <label className="text-[10px] text-slate-500 block mb-1">Subject</label>
+          <input value={subject} onChange={e => setSubject(e.target.value)}
+            placeholder="Email subject line..."
+            className="w-full px-3 py-2 rounded-lg bg-white/[0.03] border border-white/[0.08] text-sm text-slate-200 placeholder:text-slate-600 outline-none focus:border-novalyte-500/30" />
+        </div>
+
+        <div>
+          <label className="text-[10px] text-slate-500 block mb-1">Body (plain text — will be formatted as HTML)</label>
+          <textarea value={body} onChange={e => setBody(e.target.value)}
+            placeholder="Write your email here...&#10;&#10;Each line becomes a paragraph.&#10;&#10;Best,&#10;Jamil"
+            rows={10}
+            className="w-full px-3 py-2 rounded-lg bg-white/[0.03] border border-white/[0.08] text-sm text-slate-300 placeholder:text-slate-600 outline-none focus:border-novalyte-500/30 resize-y leading-relaxed" />
+        </div>
+
+        <div className="flex items-center justify-between">
+          <p className="text-[10px] text-slate-500">
+            {toEmails.length} recipient{toEmails.length !== 1 ? 's' : ''} · {remaining} sends remaining today
+          </p>
+          <button onClick={handleSend}
+            disabled={!isConfigured || sending || toEmails.length === 0 || !subject.trim() || !body.trim() || remaining === 0}
+            className={cn('btn gap-2', sending ? 'btn-secondary' : 'btn-primary')}>
+            {sending ? (
+              <><Loader2 className="w-4 h-4 animate-spin" /> Sending {sendProgress.sent}/{sendProgress.total}</>
+            ) : (
+              <><Send className="w-4 h-4" /> Send {toEmails.length} Email{toEmails.length !== 1 ? 's' : ''}</>
+            )}
+          </button>
+        </div>
+        {sending && (
+          <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
+            <div className="h-full bg-gradient-to-r from-novalyte-500 to-novalyte-400 rounded-full transition-all duration-500"
+              style={{ width: `${sendProgress.total ? (sendProgress.sent / sendProgress.total) * 100 : 0}%` }} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+/* ═══════════════════════════════════════════════════════════════
+   SEQUENCES TAB — Smart sequencing engine view
+   ═══════════════════════════════════════════════════════════════ */
+
+const stepConfig: Record<SequenceStep, { label: string; color: string; bg: string; icon: typeof Mail; day: number }> = {
+  intro: { label: 'Day 1 · Intro Email', color: 'text-blue-400', bg: 'bg-blue-500/10', icon: Mail, day: 1 },
+  follow_up: { label: 'Day 2 · Follow-Up', color: 'text-amber-400', bg: 'bg-amber-500/10', icon: Send, day: 2 },
+  phone_call: { label: 'Day 3 · Phone Call', color: 'text-novalyte-400', bg: 'bg-novalyte-500/10', icon: Phone, day: 3 },
+  value_add: { label: 'Day 4 · Value-Add', color: 'text-purple-400', bg: 'bg-purple-500/10', icon: Sparkles, day: 4 },
+  breakup: { label: 'Day 5 · Breakup', color: 'text-red-400', bg: 'bg-red-500/10', icon: MailX, day: 5 },
+  completed: { label: 'Completed', color: 'text-emerald-400', bg: 'bg-emerald-500/10', icon: CheckCircle, day: 0 },
+  replied: { label: 'Engaged', color: 'text-violet-400', bg: 'bg-violet-500/10', icon: MailOpen, day: 0 },
+  opted_out: { label: 'Opted Out', color: 'text-slate-500', bg: 'bg-white/5', icon: AlertCircle, day: 0 },
+};
+
+function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEmails: SentEmail[] }) {
+  /* ─── 5-Day Sequence Types ─── */
+  type SeqStatus = 'active' | 'paused' | 'stopped' | 'completed' | 'replied';
+
+  interface StepDraft {
+    day: number;
+    step: SequenceStep;
+    type: 'email' | 'phone';
+    status: 'pending' | 'generating' | 'ready' | 'sent' | 'called' | 'skipped';
+    subject?: string;
+    body?: string;
+    html?: string;
+    callId?: string;
+    callStatus?: string;
+    executedAt?: Date;
+    edited?: boolean;
+  }
+
+  interface Enrollment {
+    contactId: string;
+    status: SeqStatus;
+    currentDay: number;
+    enrolledAt: Date;
+    steps: StepDraft[];
+  }
+
+  const SEQ_BLUEPRINT: { day: number; step: SequenceStep; type: 'email' | 'phone'; label: string; desc: string }[] = [
+    { day: 1, step: 'intro', type: 'email', label: 'Intro Email', desc: 'Personalized intro with market data' },
+    { day: 2, step: 'follow_up', type: 'email', label: 'Follow-Up Email', desc: 'Reference intro, add new value' },
+    { day: 3, step: 'phone_call', type: 'phone', label: 'Phone Call (Kaizen)', desc: 'Voice agent call via Vapi' },
+    { day: 4, step: 'value_add', type: 'email', label: 'Value-Add Email', desc: 'Case study or market insight' },
+    { day: 5, step: 'breakup', type: 'email', label: 'Breakup Email', desc: 'Graceful close, leave door open' },
+  ];
+
+  /* ─── State ─── */
+  const [enrollments, setEnrollments] = useState<Map<string, Enrollment>>(new Map());
+  const [showEnroll, setShowEnroll] = useState(false);
+  const [enrollSearch, setEnrollSearch] = useState('');
+  const [enrollSelected, setEnrollSelected] = useState<Set<string>>(new Set());
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [editingStep, setEditingStep] = useState<{ contactId: string; day: number } | null>(null);
+  const [editSubject, setEditSubject] = useState('');
+  const [editBody, setEditBody] = useState('');
+  const [generating, setGenerating] = useState(false);
+  const [genProgress, setGenProgress] = useState({ done: 0, total: 0 });
+  const [executing, setExecuting] = useState(false);
+  const [execProgress, setExecProgress] = useState({ done: 0, total: 0 });
+  const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'paused' | 'completed' | 'replied'>('all');
+
+  /* ─── Eligible contacts for enrollment ─── */
+  const eligible = useMemo(() => {
+    return contacts.filter(c => {
+      const email = getContactEmail(c);
+      return !!email && !enrollments.has(c.id);
+    }).sort((a, b) => b.score - a.score);
+  }, [contacts, enrollments]);
+
+  const filteredEnroll = useMemo(() => {
+    if (!enrollSearch) return eligible;
+    const q = enrollSearch.toLowerCase();
+    return eligible.filter(c =>
+      c.clinic.name.toLowerCase().includes(q) ||
+      c.clinic.address.city.toLowerCase().includes(q) ||
+      (c.decisionMaker && `${c.decisionMaker.firstName} ${c.decisionMaker.lastName}`.toLowerCase().includes(q))
+    );
+  }, [eligible, enrollSearch]);
+
+  /* ─── Enrollment list with filters ─── */
+  const enrollmentList = useMemo(() => {
+    const list = Array.from(enrollments.entries()).map(([id, e]) => ({
+      enrollment: e,
+      contact: contacts.find(c => c.id === id)!,
+    })).filter(x => x.contact);
+    if (filterStatus === 'all') return list;
+    return list.filter(x => x.enrollment.status === filterStatus);
+  }, [enrollments, contacts, filterStatus]);
+
+  /* ─── Stats ─── */
+  const seqStats = useMemo(() => {
+    let active = 0, paused = 0, completed = 0, replied = 0, stopped = 0;
+    enrollments.forEach(e => {
+      if (e.status === 'active') active++;
+      else if (e.status === 'paused') paused++;
+      else if (e.status === 'completed') completed++;
+      else if (e.status === 'replied') replied++;
+      else if (e.status === 'stopped') stopped++;
+    });
+    return { total: enrollments.size, active, paused, completed, replied, stopped };
+  }, [enrollments]);
+
+  /* ─── Check reply detection from sent emails ─── */
+  const checkReplies = useCallback(() => {
+    setEnrollments(prev => {
+      const updated = new Map(prev);
+      let changed = false;
+      for (const [id, enrollment] of updated) {
+        if (enrollment.status !== 'active') continue;
+        const contactEmails = sentEmails.filter(e => e.contactId === id);
+        const hasReply = contactEmails.some(e => e.lastEvent === 'opened' || e.lastEvent === 'clicked');
+        const hasBounce = contactEmails.some(e => e.lastEvent === 'bounced');
+        if (hasReply) {
+          updated.set(id, { ...enrollment, status: 'replied' });
+          changed = true;
+        } else if (hasBounce) {
+          updated.set(id, { ...enrollment, status: 'stopped' });
+          changed = true;
+        }
+      }
+      return changed ? updated : prev;
+    });
+  }, [sentEmails]);
+
+  // Auto-check replies when sentEmails change
+  useMemo(() => { checkReplies(); }, [sentEmails]);
+
+  /* ─── Enroll clinics into sequence ─── */
+  const handleEnroll = () => {
+    if (enrollSelected.size === 0) return;
+    const newEnrollments = new Map(enrollments);
+    let count = 0;
+    for (const id of enrollSelected) {
+      if (newEnrollments.has(id)) continue;
+      const steps: StepDraft[] = SEQ_BLUEPRINT.map(s => ({
+        day: s.day, step: s.step, type: s.type, status: 'pending' as const,
+      }));
+      newEnrollments.set(id, {
+        contactId: id, status: 'active', currentDay: 1,
+        enrolledAt: new Date(), steps,
+      });
+      count++;
+    }
+    setEnrollments(newEnrollments);
+    setEnrollSelected(new Set());
+    setShowEnroll(false);
+    toast.success(`Enrolled ${count} clinic${count !== 1 ? 's' : ''} in 5-day sequence`);
+  };
+
+  /* ─── AI Generate all email steps for an enrollment ─── */
+  const handleGenerateSteps = async (contactId: string) => {
+    const contact = contacts.find(c => c.id === contactId);
+    const enrollment = enrollments.get(contactId);
+    if (!contact || !enrollment) return;
+    setGenerating(true);
+    const emailSteps = enrollment.steps.filter(s => s.type === 'email' && s.status === 'pending');
+    setGenProgress({ done: 0, total: emailSteps.length });
+    const updatedSteps = [...enrollment.steps];
+
+    for (let i = 0; i < emailSteps.length; i++) {
+      const s = emailSteps[i];
+      const idx = updatedSteps.findIndex(us => us.day === s.day);
+      updatedSteps[idx] = { ...updatedSteps[idx], status: 'generating' };
+      setEnrollments(prev => {
+        const m = new Map(prev);
+        m.set(contactId, { ...enrollment, steps: [...updatedSteps] });
+        return m;
+      });
+
+      try {
+        const stepType = s.step === 'intro' ? 'intro' : s.step === 'follow_up' ? 'follow_up' : 'breakup';
+        const prevEmails = sentEmails.filter(e => e.contactId === contactId);
+        const ai = await generatePersonalizedEmail(contact, stepType as any, prevEmails);
+        updatedSteps[idx] = {
+          ...updatedSteps[idx], status: 'ready',
+          subject: ai.subject, body: ai.plainText, html: ai.html,
+        };
+      } catch {
+        updatedSteps[idx] = { ...updatedSteps[idx], status: 'pending' };
+      }
+      setGenProgress({ done: i + 1, total: emailSteps.length });
+      setEnrollments(prev => {
+        const m = new Map(prev);
+        m.set(contactId, { ...enrollment, steps: [...updatedSteps] });
+        return m;
+      });
+      if (i < emailSteps.length - 1) await new Promise(r => setTimeout(r, 1000));
+    }
+    setGenerating(false);
+    toast.success(`Generated ${emailSteps.length} email drafts for ${contact.clinic.name}`);
+  };
+
+  /* ─── Generate all steps for ALL active enrollments ─── */
+  const handleGenerateAll = async () => {
+    const active = Array.from(enrollments.entries())
+      .filter(([_, e]) => e.status === 'active' && e.steps.some(s => s.type === 'email' && s.status === 'pending'));
+    if (active.length === 0) { toast('No pending email steps to generate'); return; }
+    setGenerating(true);
+    let totalSteps = 0;
+    active.forEach(([_, e]) => { totalSteps += e.steps.filter(s => s.type === 'email' && s.status === 'pending').length; });
+    setGenProgress({ done: 0, total: totalSteps });
+    let doneCount = 0;
+
+    for (const [id] of active) {
+      const contact = contacts.find(c => c.id === id);
+      const enrollment = enrollments.get(id);
+      if (!contact || !enrollment) continue;
+      const emailSteps = enrollment.steps.filter(s => s.type === 'email' && s.status === 'pending');
+      const updatedSteps = [...enrollment.steps];
+
+      for (const s of emailSteps) {
+        const idx = updatedSteps.findIndex(us => us.day === s.day);
+        try {
+          const stepType = s.step === 'intro' ? 'intro' : s.step === 'follow_up' ? 'follow_up' : 'breakup';
+          const ai = await generatePersonalizedEmail(contact, stepType as any, sentEmails.filter(e => e.contactId === id));
+          updatedSteps[idx] = { ...updatedSteps[idx], status: 'ready', subject: ai.subject, body: ai.plainText, html: ai.html };
+        } catch { /* skip */ }
+        doneCount++;
+        setGenProgress({ done: doneCount, total: totalSteps });
+        setEnrollments(prev => {
+          const m = new Map(prev);
+          m.set(id, { ...enrollment, steps: [...updatedSteps] });
+          return m;
+        });
+        await new Promise(r => setTimeout(r, 800));
+      }
+    }
+    setGenerating(false);
+    toast.success(`Generated ${doneCount} email drafts`);
+  };
+
+  /* ─── Execute current day step for a clinic ─── */
+  const handleExecuteStep = async (contactId: string, day: number) => {
+    const contact = contacts.find(c => c.id === contactId);
+    const enrollment = enrollments.get(contactId);
+    if (!contact || !enrollment) return;
+    if (enrollment.status !== 'active') { toast.error('Sequence is not active'); return; }
+
+    const stepIdx = enrollment.steps.findIndex(s => s.day === day);
+    const step = enrollment.steps[stepIdx];
+    if (!step) return;
+
+    if (step.type === 'phone') {
+      // Phone call via voice agent
+      if (!voiceAgentService.isConfigured) { toast.error('Vapi not configured'); return; }
+      if (!voiceAgentService.isWithinBusinessHours()) {
+        toast.error(`Outside business hours. ${voiceAgentService.getNextBusinessWindow()}`);
+        return;
+      }
+      if (!contact.clinic.phone) { toast.error('No phone number for this clinic'); return; }
+      try {
+        const call = await voiceAgentService.initiateCall(contact);
+        const updatedSteps = [...enrollment.steps];
+        updatedSteps[stepIdx] = { ...step, status: 'called', callId: call.id, callStatus: call.status, executedAt: new Date() };
+        setEnrollments(prev => {
+          const m = new Map(prev);
+          m.set(contactId, { ...enrollment, steps: updatedSteps, currentDay: Math.min(day + 1, 5) });
+          return m;
+        });
+        toast.success(`Call initiated to ${contact.clinic.name}`);
+      } catch (err: any) {
+        toast.error(err.message || 'Call failed');
+      }
+      return;
+    }
+
+    // Email step
+    if (!step.subject || !step.html) { toast.error('Generate email content first'); return; }
+    const email = getContactEmail(contact);
+    if (!email) { toast.error('No email for this contact'); return; }
+
+    try {
+      const result = await resendService.sendAIPersonalized(
+        contact, email,
+        { subject: step.subject, html: step.html },
+        step.step === 'value_add' ? 'follow_up' : step.step as any
+      );
+      const updatedSteps = [...enrollment.steps];
+      updatedSteps[stepIdx] = { ...step, status: 'sent', executedAt: new Date() };
+      setEnrollments(prev => {
+        const m = new Map(prev);
+        const nextDay = Math.min(day + 1, 5);
+        const isLast = day === 5;
+        m.set(contactId, {
+          ...enrollment, steps: updatedSteps,
+          currentDay: nextDay,
+          status: isLast ? 'completed' : enrollment.status,
+        });
+        return m;
+      });
+      toast.success(`Day ${day} email sent to ${contact.clinic.name}`);
+    } catch (err: any) {
+      toast.error(err.message || 'Send failed');
+    }
+  };
+
+  /* ─── Execute all ready steps for current day across all active enrollments ─── */
+  const handleExecuteAllReady = async () => {
+    const ready: { contactId: string; day: number }[] = [];
+    enrollments.forEach((e, id) => {
+      if (e.status !== 'active') return;
+      const currentStep = e.steps.find(s => s.day === e.currentDay);
+      if (!currentStep) return;
+      if (currentStep.type === 'email' && currentStep.status === 'ready') {
+        ready.push({ contactId: id, day: e.currentDay });
+      }
+    });
+    if (ready.length === 0) { toast('No ready steps to execute'); return; }
+    setExecuting(true);
+    setExecProgress({ done: 0, total: ready.length });
+    for (let i = 0; i < ready.length; i++) {
+      await handleExecuteStep(ready[i].contactId, ready[i].day);
+      setExecProgress({ done: i + 1, total: ready.length });
+      if (i < ready.length - 1) await new Promise(r => setTimeout(r, 1200));
+    }
+    setExecuting(false);
+    toast.success(`Executed ${ready.length} sequence steps`);
+  };
+
+  /* ─── Pause / Resume / Stop controls ─── */
+  const handlePause = (contactId: string) => {
+    setEnrollments(prev => {
+      const m = new Map(prev);
+      const e = m.get(contactId);
+      if (e && e.status === 'active') m.set(contactId, { ...e, status: 'paused' });
+      return m;
+    });
+  };
+
+  const handleResume = (contactId: string) => {
+    setEnrollments(prev => {
+      const m = new Map(prev);
+      const e = m.get(contactId);
+      if (e && e.status === 'paused') m.set(contactId, { ...e, status: 'active' });
+      return m;
+    });
+  };
+
+  const handleStop = (contactId: string) => {
+    setEnrollments(prev => {
+      const m = new Map(prev);
+      const e = m.get(contactId);
+      if (e) m.set(contactId, { ...e, status: 'stopped' });
+      return m;
+    });
+  };
+
+  const handleRemove = (contactId: string) => {
+    setEnrollments(prev => { const m = new Map(prev); m.delete(contactId); return m; });
+  };
+
+  const handleBulkPause = () => {
+    setEnrollments(prev => {
+      const m = new Map(prev);
+      m.forEach((e, id) => { if (e.status === 'active') m.set(id, { ...e, status: 'paused' }); });
+      return m;
+    });
+    toast.success('All active sequences paused');
+  };
+
+  const handleBulkResume = () => {
+    setEnrollments(prev => {
+      const m = new Map(prev);
+      m.forEach((e, id) => { if (e.status === 'paused') m.set(id, { ...e, status: 'active' }); });
+      return m;
+    });
+    toast.success('All paused sequences resumed');
+  };
+
+  /* ─── Edit step content ─── */
+  const handleSaveStepEdit = () => {
+    if (!editingStep) return;
+    setEnrollments(prev => {
+      const m = new Map(prev);
+      const e = m.get(editingStep.contactId);
+      if (!e) return prev;
+      const steps = [...e.steps];
+      const idx = steps.findIndex(s => s.day === editingStep.day);
+      if (idx === -1) return prev;
+      const htmlBody = editBody.split('\n').map(l => l.trim()).filter(Boolean)
+        .map(l => `<p style="font-size:15px;line-height:1.7;margin:0 0 12px 0;">${l.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`)
+        .join('\n');
+      const html = `<div style="font-family:Inter,Arial,sans-serif;color:#1e293b;max-width:600px;margin:0 auto;padding:24px;">${htmlBody}</div>`;
+      steps[idx] = { ...steps[idx], subject: editSubject, body: editBody, html, edited: true, status: 'ready' };
+      m.set(editingStep.contactId, { ...e, steps });
+      return m;
+    });
+    setEditingStep(null);
+    toast.success('Step updated');
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* ─── Sequence Blueprint ─── */}
+      <div className="glass-card p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Zap className="w-4 h-4 text-novalyte-400" />
+          <h3 className="text-sm font-semibold text-slate-200">5-Day Multi-Touch Sequence</h3>
+          <span className="text-[10px] px-2 py-0.5 rounded-full bg-novalyte-500/10 text-novalyte-400">AI + Voice</span>
+        </div>
+        <div className="flex items-center gap-1 overflow-x-auto pb-2">
+          {SEQ_BLUEPRINT.map((s, i) => {
+            const cfg = stepConfig[s.step];
+            const StepIcon = cfg.icon;
+            return (
+              <div key={s.day} className="flex items-center shrink-0">
+                <div className={cn('flex items-center gap-2 px-3 py-2 rounded-lg border', cfg.bg, 'border-white/[0.06]')}>
+                  <div className={cn('w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold', cfg.bg, cfg.color)}>
+                    {s.day}
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-1">
+                      <StepIcon className={cn('w-3 h-3', cfg.color)} />
+                      <span className={cn('text-[11px] font-medium', cfg.color)}>{s.label}</span>
+                    </div>
+                    <p className="text-[9px] text-slate-500">{s.desc}</p>
+                  </div>
+                </div>
+                {i < SEQ_BLUEPRINT.length - 1 && (
+                  <div className="w-4 h-px bg-white/10 shrink-0" />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ─── Stats Bar ─── */}
+      <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
+        {[
+          { label: 'Total', value: seqStats.total, color: 'text-slate-300' },
+          { label: 'Active', value: seqStats.active, color: 'text-novalyte-400' },
+          { label: 'Paused', value: seqStats.paused, color: 'text-amber-400' },
+          { label: 'Replied', value: seqStats.replied, color: 'text-violet-400' },
+          { label: 'Completed', value: seqStats.completed, color: 'text-emerald-400' },
+          { label: 'Stopped', value: seqStats.stopped, color: 'text-red-400' },
+        ].map(s => (
+          <div key={s.label} className="glass-card p-3 text-center">
+            <p className={cn('text-xl font-bold tabular-nums', s.color)}>{s.value}</p>
+            <p className="text-[10px] text-slate-500">{s.label}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* ─── Controls Bar ─── */}
+      <div className="flex flex-wrap items-center gap-2">
+        <button onClick={() => setShowEnroll(!showEnroll)}
+          className={cn('btn gap-1.5 text-xs', showEnroll ? 'btn-primary' : 'btn-secondary')}>
+          <Plus className="w-3.5 h-3.5" /> Enroll Clinics
+        </button>
+        <button onClick={handleGenerateAll} disabled={generating || enrollments.size === 0}
+          className="btn btn-secondary gap-1.5 text-xs">
+          {generating ? (
+            <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Generating {genProgress.done}/{genProgress.total}</>
+          ) : (
+            <><Wand2 className="w-3.5 h-3.5" /> AI Generate All</>
+          )}
+        </button>
+        <button onClick={handleExecuteAllReady} disabled={executing || enrollments.size === 0}
+          className="btn btn-secondary gap-1.5 text-xs">
+          {executing ? (
+            <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Executing {execProgress.done}/{execProgress.total}</>
+          ) : (
+            <><Play className="w-3.5 h-3.5" /> Execute Ready Steps</>
+          )}
+        </button>
+        {seqStats.active > 0 && (
+          <button onClick={handleBulkPause} className="btn btn-secondary gap-1 text-xs">
+            <Pause className="w-3 h-3" /> Pause All
+          </button>
+        )}
+        {seqStats.paused > 0 && (
+          <button onClick={handleBulkResume} className="btn btn-secondary gap-1 text-xs">
+            <Play className="w-3 h-3" /> Resume All
+          </button>
+        )}
+        <div className="ml-auto flex items-center gap-1">
+          <Filter className="w-3 h-3 text-slate-600" />
+          <select value={filterStatus} onChange={e => setFilterStatus(e.target.value as any)}
+            className="bg-white/[0.03] border border-white/[0.06] rounded-lg text-[11px] text-slate-400 px-2 py-1.5 outline-none">
+            <option value="all">All</option>
+            <option value="active">Active</option>
+            <option value="paused">Paused</option>
+            <option value="completed">Completed</option>
+            <option value="replied">Replied</option>
+          </select>
+        </div>
+      </div>
+
+      {generating && (
+        <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
+          <div className="h-full bg-gradient-to-r from-purple-500 to-novalyte-400 rounded-full transition-all duration-500"
+            style={{ width: `${genProgress.total ? (genProgress.done / genProgress.total) * 100 : 0}%` }} />
+        </div>
+      )}
+
+      {/* ─── Enroll Panel ─── */}
+      {showEnroll && (
+        <div className="glass-card p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Users className="w-4 h-4 text-novalyte-400" />
+              <h4 className="text-sm font-semibold text-slate-200">Enroll Clinics</h4>
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/5 text-slate-500">
+                {enrollSelected.size} selected · {eligible.length} available
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button onClick={() => setEnrollSelected(new Set(eligible.slice(0, 50).map(c => c.id)))}
+                className="text-[11px] text-novalyte-400 hover:text-novalyte-300">Select All</button>
+              <button onClick={() => setEnrollSelected(new Set())}
+                className="text-[11px] text-slate-500 hover:text-slate-300">Clear</button>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Search className="w-4 h-4 text-slate-500" />
+            <input value={enrollSearch} onChange={e => setEnrollSearch(e.target.value)}
+              placeholder="Search clinics..."
+              className="flex-1 bg-transparent text-sm text-slate-200 placeholder:text-slate-500 outline-none" />
+          </div>
+          <div className="max-h-[300px] overflow-y-auto rounded-lg border border-white/[0.06]">
+            {filteredEnroll.slice(0, 50).map(c => {
+              const email = getContactEmail(c)!;
+              const dm = c.decisionMaker;
+              const selected = enrollSelected.has(c.id);
+              return (
+                <div key={c.id} onClick={() => {
+                  setEnrollSelected(prev => {
+                    const s = new Set(prev);
+                    s.has(c.id) ? s.delete(c.id) : s.add(c.id);
+                    return s;
+                  });
+                }}
+                  className={cn('flex items-center gap-3 px-3 py-2.5 cursor-pointer border-b border-white/[0.04] last:border-0 transition-all',
+                    selected ? 'bg-novalyte-500/10' : 'hover:bg-white/[0.03]')}>
+                  <input type="checkbox" checked={selected} readOnly
+                    className="w-3.5 h-3.5 rounded border-white/20 bg-white/5 text-novalyte-500 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-slate-200 font-medium truncate">{c.clinic.name}</p>
+                    <p className="text-[10px] text-slate-500">
+                      {dm ? `${dm.firstName} ${dm.lastName} · ` : ''}{email} · {c.clinic.address.city}, {c.clinic.address.state}
+                      {c.clinic.phone ? ` · ${c.clinic.phone}` : ' · No phone'}
+                    </p>
+                  </div>
+                  <span className={cn('text-xs font-bold', c.score >= 80 ? 'text-emerald-400' : c.score >= 60 ? 'text-amber-400' : 'text-slate-500')}>{c.score}</span>
+                </div>
+              );
+            })}
+            {filteredEnroll.length === 0 && (
+              <div className="p-6 text-center text-xs text-slate-500">No eligible clinics found</div>
+            )}
+          </div>
+          <div className="flex items-center justify-between">
+            <p className="text-[10px] text-slate-500">{filteredEnroll.length} clinics available</p>
+            <button onClick={handleEnroll} disabled={enrollSelected.size === 0}
+              className="btn btn-primary text-xs gap-1.5">
+              <Zap className="w-3.5 h-3.5" /> Enroll {enrollSelected.size} Clinic{enrollSelected.size !== 1 ? 's' : ''}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Enrollment List ─── */}
+      {enrollmentList.length === 0 ? (
+        <div className="glass-card p-12 text-center">
+          <Zap className="w-10 h-10 text-slate-600 mx-auto mb-3" />
+          <p className="text-slate-400">No clinics enrolled yet</p>
+          <p className="text-xs text-slate-500 mt-1">Click "Enroll Clinics" to start a 5-day multi-touch sequence</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {enrollmentList.map(({ enrollment, contact }) => {
+            const isExpanded = expandedId === contact.id;
+            const email = getContactEmail(contact) || '';
+            const dm = contact.decisionMaker;
+            const currentStep = enrollment.steps.find(s => s.day === enrollment.currentDay);
+            const statusColors: Record<string, string> = {
+              active: 'text-novalyte-400 bg-novalyte-500/10',
+              paused: 'text-amber-400 bg-amber-500/10',
+              completed: 'text-emerald-400 bg-emerald-500/10',
+              replied: 'text-violet-400 bg-violet-500/10',
+              stopped: 'text-red-400 bg-red-500/10',
+            };
+
+            return (
+              <div key={contact.id} className="glass-card overflow-hidden">
+                {/* Header row */}
+                <div className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-white/[0.02] transition-all"
+                  onClick={() => setExpandedId(isExpanded ? null : contact.id)}>
+                  <ChevronDown className={cn('w-4 h-4 text-slate-500 transition-transform shrink-0', isExpanded && 'rotate-180')} />
+                  <span className={cn('px-2 py-0.5 rounded text-[10px] font-medium shrink-0', statusColors[enrollment.status])}>
+                    {enrollment.status.charAt(0).toUpperCase() + enrollment.status.slice(1)}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm text-slate-200 font-medium truncate">{contact.clinic.name}</p>
+                      {dm && <span className="text-[10px] text-slate-500">{dm.firstName} {dm.lastName}</span>}
+                    </div>
+                    <p className="text-[10px] text-slate-500">{email} · {contact.clinic.address.city}, {contact.clinic.address.state}</p>
+                  </div>
+                  {/* Timeline dots */}
+                  <div className="flex items-center gap-1 shrink-0">
+                    {enrollment.steps.map(s => {
+                      const cfg = stepConfig[s.step];
+                      return (
+                        <div key={s.day} className={cn('w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold border',
+                          s.status === 'sent' || s.status === 'called' ? `${cfg.bg} ${cfg.color} border-transparent` :
+                          s.status === 'ready' ? 'bg-white/5 text-slate-300 border-novalyte-500/30' :
+                          s.day === enrollment.currentDay ? 'bg-white/5 text-slate-400 border-white/20' :
+                          'bg-white/[0.02] text-slate-600 border-white/[0.06]'
+                        )} title={`Day ${s.day}: ${s.status}`}>
+                          {s.day}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {/* Controls */}
+                  <div className="flex items-center gap-1 shrink-0" onClick={e => e.stopPropagation()}>
+                    {enrollment.status === 'active' && (
+                      <button onClick={() => handlePause(contact.id)} className="p-1.5 rounded hover:bg-white/[0.05] text-slate-500 hover:text-amber-400 transition-all" title="Pause">
+                        <Pause className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    {enrollment.status === 'paused' && (
+                      <button onClick={() => handleResume(contact.id)} className="p-1.5 rounded hover:bg-white/[0.05] text-slate-500 hover:text-novalyte-400 transition-all" title="Resume">
+                        <Play className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    {(enrollment.status === 'active' || enrollment.status === 'paused') && (
+                      <button onClick={() => handleStop(contact.id)} className="p-1.5 rounded hover:bg-white/[0.05] text-slate-500 hover:text-red-400 transition-all" title="Stop">
+                        <StopCircle className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    <button onClick={() => handleRemove(contact.id)} className="p-1.5 rounded hover:bg-white/[0.05] text-slate-500 hover:text-red-400 transition-all" title="Remove">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Expanded: Step Timeline */}
+                {isExpanded && (
+                  <div className="border-t border-white/[0.06] px-4 py-3 space-y-2">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-[10px] text-slate-500 uppercase tracking-wider">Sequence Timeline</p>
+                      {enrollment.status === 'active' && (
+                        <button onClick={() => handleGenerateSteps(contact.id)} disabled={generating}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium bg-purple-500/10 text-purple-400 border border-purple-500/20 hover:bg-purple-500/20 transition-colors">
+                          {generating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
+                          AI Generate All Steps
+                        </button>
+                      )}
+                    </div>
+                    {enrollment.steps.map(s => {
+                      const cfg = stepConfig[s.step];
+                      const StepIcon = cfg.icon;
+                      const isCurrentDay = s.day === enrollment.currentDay && enrollment.status === 'active';
+                      const isEditing = editingStep?.contactId === contact.id && editingStep?.day === s.day;
+
+                      return (
+                        <div key={s.day} className={cn('rounded-lg border p-3 transition-all',
+                          isCurrentDay ? 'border-novalyte-500/30 bg-novalyte-500/5' : 'border-white/[0.06] bg-white/[0.01]',
+                          s.status === 'sent' || s.status === 'called' ? 'opacity-70' : ''
+                        )}>
+                          <div className="flex items-center gap-3">
+                            <div className={cn('w-8 h-8 rounded-lg flex items-center justify-center shrink-0', cfg.bg)}>
+                              <StepIcon className={cn('w-4 h-4', cfg.color)} />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className={cn('text-xs font-medium', cfg.color)}>Day {s.day} · {cfg.label.split(' · ')[1] || cfg.label}</span>
+                                <span className={cn('text-[9px] px-1.5 py-0.5 rounded-full font-medium',
+                                  s.status === 'sent' || s.status === 'called' ? 'bg-emerald-500/10 text-emerald-400' :
+                                  s.status === 'ready' ? 'bg-novalyte-500/10 text-novalyte-400' :
+                                  s.status === 'generating' ? 'bg-purple-500/10 text-purple-400' :
+                                  'bg-white/5 text-slate-500'
+                                )}>{s.status}</span>
+                                {s.edited && <span className="text-[9px] text-amber-400">edited</span>}
+                                {s.executedAt && <span className="text-[9px] text-slate-500">{format(new Date(s.executedAt), 'MMM d, h:mm a')}</span>}
+                              </div>
+                              {s.subject && !isEditing && (
+                                <p className="text-[11px] text-slate-400 mt-0.5 truncate">Subject: {s.subject}</p>
+                              )}
+                              {s.type === 'phone' && s.callId && (
+                                <p className="text-[11px] text-novalyte-400 mt-0.5">Call ID: {s.callId} · Status: {s.callStatus || 'unknown'}</p>
+                              )}
+                              {s.type === 'phone' && !s.callId && s.status === 'pending' && (
+                                <p className="text-[10px] text-slate-500 mt-0.5">
+                                  {contact.clinic.phone ? `Will call ${contact.clinic.phone}` : 'No phone number — will skip'}
+                                  {!voiceAgentService.isWithinBusinessHours() && ' · Outside business hours'}
+                                </p>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              {s.type === 'email' && s.status === 'ready' && !isEditing && (
+                                <>
+                                  <button onClick={() => { setEditingStep({ contactId: contact.id, day: s.day }); setEditSubject(s.subject || ''); setEditBody(s.body || ''); }}
+                                    className="p-1.5 rounded hover:bg-white/[0.05] text-slate-500 hover:text-slate-300 transition-all" title="Edit">
+                                    <Edit3 className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button onClick={() => { setEditingStep(null); handleGenerateSteps(contact.id); }}
+                                    className="p-1.5 rounded hover:bg-white/[0.05] text-slate-500 hover:text-purple-400 transition-all" title="Regenerate">
+                                    <Wand2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </>
+                              )}
+                              {s.type === 'email' && s.status === 'ready' && isCurrentDay && enrollment.status === 'active' && (
+                                <button onClick={() => handleExecuteStep(contact.id, s.day)}
+                                  className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-medium bg-novalyte-500/20 text-novalyte-300 hover:bg-novalyte-500/30 transition-all">
+                                  <Send className="w-3 h-3" /> Send
+                                </button>
+                              )}
+                              {s.type === 'phone' && s.status === 'pending' && isCurrentDay && enrollment.status === 'active' && contact.clinic.phone && (
+                                <button onClick={() => handleExecuteStep(contact.id, s.day)}
+                                  className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-medium bg-novalyte-500/20 text-novalyte-300 hover:bg-novalyte-500/30 transition-all">
+                                  <Phone className="w-3 h-3" /> Call
+                                </button>
+                              )}
+                              {s.status === 'pending' && s.type === 'email' && (
+                                <button onClick={() => { setEditingStep({ contactId: contact.id, day: s.day }); setEditSubject(''); setEditBody(''); }}
+                                  className="p-1.5 rounded hover:bg-white/[0.05] text-slate-500 hover:text-slate-300 transition-all" title="Write manually">
+                                  <PenLine className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                              {(s.status === 'sent' || s.status === 'called') && (
+                                <Eye className="w-3.5 h-3.5 text-slate-600" />
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Inline editor */}
+                          {isEditing && (
+                            <div className="mt-3 space-y-2 border-t border-white/[0.06] pt-3">
+                              <div>
+                                <label className="text-[10px] text-slate-500 block mb-1">Subject</label>
+                                <input value={editSubject} onChange={e => setEditSubject(e.target.value)}
+                                  className="w-full px-3 py-2 rounded-md bg-white/[0.03] border border-white/[0.08] text-sm text-slate-200 outline-none focus:border-novalyte-500/30" />
+                              </div>
+                              <div>
+                                <label className="text-[10px] text-slate-500 block mb-1">Body</label>
+                                <textarea value={editBody} onChange={e => setEditBody(e.target.value)} rows={6}
+                                  className="w-full px-3 py-2 rounded-md bg-white/[0.03] border border-white/[0.08] text-sm text-slate-300 outline-none focus:border-novalyte-500/30 resize-y leading-relaxed" />
+                              </div>
+                              <div className="flex items-center gap-2 justify-end">
+                                <button onClick={() => setEditingStep(null)} className="btn btn-secondary text-xs">Cancel</button>
+                                <button onClick={handleSaveStepEdit} className="btn btn-primary text-xs gap-1">
+                                  <CheckCircle className="w-3.5 h-3.5" /> Save
+                                </button>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Preview body when ready and not editing */}
+                          {s.body && !isEditing && s.status === 'ready' && (
+                            <div className="mt-2 text-[11px] text-slate-500 leading-relaxed line-clamp-2">{s.body}</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
