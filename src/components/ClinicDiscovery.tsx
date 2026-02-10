@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react';
 import {
   Building2, Search, RefreshCw, MapPin, Star, Phone, Globe, Plus,
   ExternalLink, Users, Radar, X, ChevronDown, ChevronUp,
-  UserSearch, Trash2, CheckCircle2, LayoutGrid, LayoutList, Mail,
+  UserSearch, Trash2, CheckCircle2, LayoutGrid, LayoutList, Mail, Download,
 } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
 import { clinicService } from '../services/clinicService';
@@ -324,13 +324,55 @@ function ClinicDiscovery() {
           <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">Clinic Discovery</h1>
           <p className="text-slate-500 text-sm">Find and manage men's health clinics across affluent markets</p>
         </div>
-        <div className="flex items-center gap-1 bg-white/5 rounded-lg p-1 border border-white/[0.06]">
-          <button onClick={() => setViewMode('table')} className={cn('p-2 rounded-md transition-colors', viewMode === 'table' ? 'bg-novalyte-500/20 text-novalyte-400' : 'text-slate-500 hover:text-slate-300')}>
-            <LayoutList className="w-4 h-4" />
+        <div className="flex items-center gap-2">
+          <button onClick={() => {
+            const rows = filteredClinics.map(c => ({
+              name: c.name,
+              type: getTypeLabel(c.type),
+              street: c.address.street,
+              city: c.address.city,
+              state: c.address.state,
+              zip: c.address.zip,
+              phone: c.phone || '',
+              email: c.email || '',
+              website: c.website || '',
+              rating: c.rating ?? '',
+              reviews: c.reviewCount ?? '',
+              services: c.services.join('; '),
+              manager_name: c.managerName || '',
+              manager_email: c.managerEmail || '',
+              owner_name: c.ownerName || '',
+              owner_email: c.ownerEmail || '',
+              market: `${c.marketZone.city}, ${c.marketZone.state}`,
+              affluence_score: c.marketZone.affluenceScore,
+              median_income: c.marketZone.medianIncome,
+              in_crm: isInCRM(c) ? 'Yes' : 'No',
+              google_place_id: c.googlePlaceId || '',
+            }));
+            const headers = Object.keys(rows[0] || {});
+            const csv = [headers.join(','), ...rows.map(r => headers.map(h => {
+              const v = String((r as any)[h] || '');
+              return v.includes(',') || v.includes('"') || v.includes('\n') ? `"${v.replace(/"/g, '""')}"` : v;
+            }).join(','))].join('\n');
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `novalyte-clinics-${new Date().toISOString().slice(0,10)}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+            toast.success(`Exported ${rows.length} clinics to CSV`);
+          }} className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-novalyte-500/20 text-novalyte-300 text-xs font-medium hover:bg-novalyte-500/30 transition-colors border border-novalyte-500/20">
+            <Download className="w-3.5 h-3.5" /> Export CSV
           </button>
-          <button onClick={() => setViewMode('grid')} className={cn('p-2 rounded-md transition-colors', viewMode === 'grid' ? 'bg-novalyte-500/20 text-novalyte-400' : 'text-slate-500 hover:text-slate-300')}>
-            <LayoutGrid className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1 bg-white/5 rounded-lg p-1 border border-white/[0.06]">
+            <button onClick={() => setViewMode('table')} className={cn('p-2 rounded-md transition-colors', viewMode === 'table' ? 'bg-novalyte-500/20 text-novalyte-400' : 'text-slate-500 hover:text-slate-300')}>
+              <LayoutList className="w-4 h-4" />
+            </button>
+            <button onClick={() => setViewMode('grid')} className={cn('p-2 rounded-md transition-colors', viewMode === 'grid' ? 'bg-novalyte-500/20 text-novalyte-400' : 'text-slate-500 hover:text-slate-300')}>
+              <LayoutGrid className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       </div>
 
