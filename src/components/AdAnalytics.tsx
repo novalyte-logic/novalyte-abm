@@ -488,7 +488,7 @@ export default function AdAnalytics() {
           )}
         </div>
 
-        {/* Geographic Distribution */}
+        {/* Geographic Distribution with Map */}
         <div className="glass-card p-4">
           <h2 className="text-sm font-semibold text-slate-200 mb-3 flex items-center gap-2">
             <MapPin className="w-4 h-4 text-novalyte-400" />
@@ -497,24 +497,89 @@ export default function AdAnalytics() {
           {topStates.length === 0 ? (
             <p className="text-xs text-slate-500 py-8 text-center">No geo data yet.</p>
           ) : (
-            <div className="space-y-1.5">
-              {topStates.map(([state, count], i) => {
-                const pct = leads.length ? Math.round((count / leads.length) * 100) : 0;
-                return (
-                  <div key={state} className="flex items-center gap-2">
-                    <span className="text-[10px] text-slate-500 w-5">{i + 1}.</span>
-                    <span className="text-xs text-slate-300 flex-1 truncate">{state}</span>
-                    <div className="w-24 h-1.5 bg-white/[0.05] rounded-full overflow-hidden">
-                      <div className="h-full bg-novalyte-500 rounded-full" style={{ width: `${pct}%` }} />
+            <div className="space-y-3">
+              {/* Mini Map */}
+              <div className="rounded-lg overflow-hidden border border-white/[0.06] h-[180px]">
+                <iframe
+                  width="100%"
+                  height="100%"
+                  style={{ border: 0, filter: 'invert(90%) hue-rotate(180deg)' }}
+                  loading="lazy"
+                  referrerPolicy="no-referrer-when-downgrade"
+                  src={`https://www.google.com/maps/embed/v1/view?key=${import.meta.env.VITE_GOOGLE_PLACES_API_KEY}&center=39.8283,-98.5795&zoom=3&maptype=roadmap`}
+                />
+              </div>
+              {/* State List */}
+              <div className="space-y-1.5 max-h-[150px] overflow-y-auto">
+                {topStates.map(([state, count], i) => {
+                  const pct = leads.length ? Math.round((count / leads.length) * 100) : 0;
+                  return (
+                    <div key={state} className="flex items-center gap-2">
+                      <span className="text-[10px] text-slate-500 w-5">{i + 1}.</span>
+                      <span className="text-xs text-slate-300 flex-1 truncate">{state}</span>
+                      <div className="w-20 h-1.5 bg-white/[0.05] rounded-full overflow-hidden">
+                        <div className="h-full bg-novalyte-500 rounded-full" style={{ width: `${pct}%` }} />
+                      </div>
+                      <span className="text-[10px] text-slate-500 w-8 text-right">{count}</span>
                     </div>
-                    <span className="text-[10px] text-slate-500 w-8 text-right">{count}</span>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>
       </div>
+
+      {/* Full Width Geo Map */}
+      {topStates.length > 0 && (
+        <div className="glass-card p-4">
+          <h2 className="text-sm font-semibold text-slate-200 mb-3 flex items-center gap-2">
+            <MapPin className="w-4 h-4 text-novalyte-400" />
+            Traffic Heatmap — Top Locations
+          </h2>
+          <div className="grid md:grid-cols-3 gap-4">
+            {/* Large Map */}
+            <div className="md:col-span-2 rounded-lg overflow-hidden border border-white/[0.06] h-[300px]">
+              <iframe
+                width="100%"
+                height="100%"
+                style={{ border: 0, filter: 'invert(90%) hue-rotate(180deg)' }}
+                loading="lazy"
+                referrerPolicy="no-referrer-when-downgrade"
+                src={`https://www.google.com/maps/embed/v1/view?key=${import.meta.env.VITE_GOOGLE_PLACES_API_KEY}&center=39.8283,-98.5795&zoom=4&maptype=roadmap`}
+              />
+            </div>
+            {/* Top Cities */}
+            <div className="space-y-2">
+              <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium mb-2">Top Cities</p>
+              {(() => {
+                const cityMap = new Map<string, number>();
+                leads.forEach(l => {
+                  const city = l.geo_city || 'Unknown';
+                  if (city !== 'Unknown') cityMap.set(city, (cityMap.get(city) || 0) + 1);
+                });
+                pageEvents.forEach(e => {
+                  const city = e.geo_city || 'Unknown';
+                  if (city !== 'Unknown') cityMap.set(city, (cityMap.get(city) || 0) + 1);
+                });
+                return Array.from(cityMap.entries())
+                  .sort((a, b) => b[1] - a[1])
+                  .slice(0, 10)
+                  .map(([city, count], i) => (
+                    <div key={city} className="flex items-center gap-2 p-2 bg-white/[0.02] rounded-lg">
+                      <span className="w-5 h-5 rounded-full bg-novalyte-500/20 text-novalyte-400 text-[10px] font-bold flex items-center justify-center">{i + 1}</span>
+                      <span className="text-xs text-slate-300 flex-1 truncate">{city}</span>
+                      <span className="text-[10px] text-novalyte-400 font-medium">{count}</span>
+                    </div>
+                  ));
+              })()}
+              {leads.length === 0 && pageEvents.length === 0 && (
+                <p className="text-xs text-slate-500 text-center py-4">No city data yet</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid md:grid-cols-3 gap-4">
         {/* Device Breakdown */}
