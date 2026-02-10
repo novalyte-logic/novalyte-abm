@@ -842,7 +842,7 @@ function QueueTab({
                             'w-full py-3 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all',
                             isCalling
                               ? 'bg-green-500/20 text-green-400 border border-green-500/20 cursor-wait'
-                              : 'bg-gradient-to-r from-novalyte-500 to-novalyte-400 text-white hover:from-novalyte-400 hover:to-novalyte-300 shadow-lg shadow-novalyte-500/20'
+                              : 'bg-gradient-to-r from-novalyte-500 to-novalyte-400 text-black hover:from-novalyte-400 hover:to-novalyte-300 shadow-lg shadow-novalyte-500/20'
                           )}
                         >
                           {isCalling ? (
@@ -1524,9 +1524,9 @@ function CallDrawer({ call, contact, onClose }: {
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full sm:max-w-lg bg-slate-900 border-l border-white/[0.06] shadow-2xl overflow-y-auto animate-slide-in">
+      <div className="relative w-full sm:max-w-lg bg-black border-l border-white/[0.06] shadow-2xl overflow-y-auto animate-slide-in">
         {/* Header */}
-        <div className="sticky top-0 bg-slate-900/95 backdrop-blur-xl border-b border-white/[0.06] p-3 sm:p-4 flex items-center justify-between z-10">
+        <div className="sticky top-0 bg-black/95 backdrop-blur-xl border-b border-white/[0.06] p-3 sm:p-4 flex items-center justify-between z-10">
           <div className="flex items-center gap-3">
             <div className={cn('w-10 h-10 rounded-lg flex items-center justify-center',
               call.status === 'completed' ? 'bg-emerald-500/15' : 'bg-white/5'

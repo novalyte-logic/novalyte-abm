@@ -1,0 +1,16 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="brand" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22D3EE"/>
+      <stop offset="100%" stop-color="#06B6D4"/>
+    </linearGradient>
+  </defs>
+  <!-- Dark circle background -->
+  <circle cx="256" cy="256" r="240" fill="#000000"/>
+  <!-- Cyan ring -->
+  <circle cx="256" cy="256" r="240" fill="none" stroke="url(#brand)" stroke-width="24"/>
+  <!-- Bold N -->
+  <text x="256" y="340" font-size="280" font-weight="800" fill="url(#brand)" text-anchor="middle" font-family="Inter,system-ui,sans-serif">N</text>
+  <!-- Diagonal slash -->
+  <line x1="120" y1="400" x2="400" y2="100" stroke="url(#brand)" stroke-width="24" stroke-linecap="round"/>
+</svg>

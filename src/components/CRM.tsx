@@ -330,10 +330,10 @@ function CRM() {
   const drawerOpen = !!selectedContact;
 
   return (
-    <div className="flex flex-col h-full bg-slate-950 overflow-hidden">
+    <div className="flex flex-col h-full bg-black overflow-hidden">
 
       {/* ═══ Top Bar ═══ */}
-      <div className="bg-slate-900/80 border-b border-white/[0.06] px-4 sm:px-6 py-3 sm:py-4 shrink-0">
+      <div className="bg-black/80 border-b border-white/[0.06] px-4 sm:px-6 py-3 sm:py-4 shrink-0">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-0 mb-3">
           <div>
             <h1 className="text-xl font-semibold text-white tracking-tight">Pipeline</h1>
@@ -391,7 +391,7 @@ function CRM() {
                     {/* Region header */}
                     <button
                       onClick={() => toggleRegion(region.key)}
-                      className="w-full sticky top-0 z-10 flex items-center gap-3 px-6 py-2.5 bg-slate-900/95 backdrop-blur-sm border-b border-white/[0.06] hover:bg-white/[0.03] transition-colors"
+                      className="w-full sticky top-0 z-10 flex items-center gap-3 px-6 py-2.5 bg-black/95 backdrop-blur-sm border-b border-white/[0.06] hover:bg-white/[0.03] transition-colors"
                     >
                       {isCollapsed ? <ChevronRight className="w-4 h-4 text-slate-500 shrink-0" /> : <ChevronDown className="w-4 h-4 text-slate-500 shrink-0" />}
                       <MapPinned className="w-4 h-4 text-novalyte-400 shrink-0" />
@@ -507,7 +507,7 @@ function CRM() {
         </div>
 
         {/* ── Slide-over Drawer ── */}
-        <div className={cn('shrink-0 bg-slate-900 border-l border-white/[0.06] flex flex-col overflow-hidden transition-all duration-300 ease-in-out', drawerOpen ? 'w-full sm:w-[480px] fixed sm:relative inset-0 sm:inset-auto z-40 sm:z-auto opacity-100' : 'w-0 opacity-0')}>
+        <div className={cn('shrink-0 bg-black border-l border-white/[0.06] flex flex-col overflow-hidden transition-all duration-300 ease-in-out', drawerOpen ? 'w-full sm:w-[480px] fixed sm:relative inset-0 sm:inset-auto z-40 sm:z-auto opacity-100' : 'w-0 opacity-0')}>
           {selectedContact && (
             <>
               {/* Drawer Header */}
@@ -527,7 +527,7 @@ function CRM() {
                   <button onClick={() => selectContact(null)} className="p-1 rounded-md hover:bg-white/5 text-slate-500 hover:text-slate-300"><X className="w-4 h-4" /></button>
                 </div>
                 <div className="flex items-center gap-1.5 ml-7 mt-2">
-                  <button onClick={() => handleSendEmail()} className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-novalyte-600 text-white rounded-md text-[11px] font-medium hover:bg-novalyte-700"><Send className="w-3 h-3" /> Email</button>
+                  <button onClick={() => handleSendEmail()} className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-novalyte-500 text-black font-semibold rounded-md text-[11px] font-medium hover:bg-novalyte-400"><Send className="w-3 h-3" /> Email</button>
                   <button onClick={() => handleCallClinic()} className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-emerald-600 text-white rounded-md text-[11px] font-medium hover:bg-emerald-700"><PhoneCall className="w-3 h-3" /> Call</button>
                   {(selectedContact.decisionMaker?.email || selectedContact.clinic.managerEmail) && <button onClick={handleCopyEmail} className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-white/5 border border-white/[0.06] text-slate-400 rounded-md text-[11px] font-medium hover:bg-white/[0.08]"><Copy className="w-3 h-3" /> Copy</button>}
                   <button onClick={() => setShowFollowUp(!showFollowUp)} className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-white/5 border border-white/[0.06] text-slate-400 rounded-md text-[11px] font-medium hover:bg-white/[0.08]"><Calendar className="w-3 h-3" /> Follow-up</button>
@@ -535,7 +535,7 @@ function CRM() {
                 </div>
                 {showFollowUp && (
                   <div className="flex items-center gap-2 mt-2 ml-7 p-2 bg-amber-500/10 border border-amber-500/20 rounded-lg">
-                    <input type="date" value={followUpDate} onChange={e => setFollowUpDate(e.target.value)} className="flex-1 text-xs py-1 px-2 bg-slate-800 border border-white/[0.06] rounded text-slate-300" />
+                    <input type="date" value={followUpDate} onChange={e => setFollowUpDate(e.target.value)} className="flex-1 text-xs py-1 px-2 bg-white/[0.04] border border-white/[0.06] rounded text-slate-300" />
                     <button onClick={handleSetFollowUp} disabled={!followUpDate} className="px-2.5 py-1 bg-amber-500 text-white rounded text-[11px] font-medium hover:bg-amber-600 disabled:opacity-50">Set</button>
                     <button onClick={() => setShowFollowUp(false)} className="text-[11px] text-slate-500 hover:text-slate-300">Cancel</button>
                   </div>
@@ -622,7 +622,7 @@ function CRM() {
                     <div className="space-y-1.5">{intel.objectionHandlers.map((oh, i) => <div key={i} className="text-xs text-slate-400 bg-red-500/10 border border-red-500/10 p-2.5 rounded-lg leading-relaxed">{oh}</div>)}</div>
                   </Collapsible>
                   <Collapsible title="Email Draft" icon={<Mail className="w-3.5 h-3.5 text-novalyte-500" />} open={showEmailDraft} onToggle={() => setShowEmailDraft(!showEmailDraft)}>
-                    {emailDraft && (<div className="space-y-2"><p className="text-[10px] text-slate-500">Subject: <span className="font-medium text-slate-300">{emailDraft.subject}</span></p><pre className="text-xs text-slate-400 bg-white/[0.03] border border-white/[0.06] p-3 rounded-lg whitespace-pre-wrap font-sans leading-relaxed">{emailDraft.body}</pre><button onClick={() => handleSendEmail()} className="w-full flex items-center justify-center gap-1 px-3 py-1.5 bg-novalyte-600 text-white rounded-md text-[11px] font-medium hover:bg-novalyte-700"><Send className="w-3 h-3" /> Open in Email Client</button></div>)}
+                    {emailDraft && (<div className="space-y-2"><p className="text-[10px] text-slate-500">Subject: <span className="font-medium text-slate-300">{emailDraft.subject}</span></p><pre className="text-xs text-slate-400 bg-white/[0.03] border border-white/[0.06] p-3 rounded-lg whitespace-pre-wrap font-sans leading-relaxed">{emailDraft.body}</pre><button onClick={() => handleSendEmail()} className="w-full flex items-center justify-center gap-1 px-3 py-1.5 bg-novalyte-500 text-black font-semibold rounded-md text-[11px] font-medium hover:bg-novalyte-400"><Send className="w-3 h-3" /> Open in Email Client</button></div>)}
                   </Collapsible>
                   <Section title="Log Call Outcome" icon={<Phone className="w-3.5 h-3.5 text-slate-400" />}>
                     <div className="grid grid-cols-2 gap-1.5">{callOutcomes.map(o => <button key={o.label} onClick={() => handleLogCall(o.label, o.status)} className="flex items-center gap-1.5 text-[11px] px-2.5 py-2 bg-white/[0.03] hover:bg-white/[0.06] border border-white/[0.06] rounded-lg text-slate-400 text-left transition-colors"><span className="text-sm">{o.emoji}</span>{o.label}</button>)}</div>
@@ -854,7 +854,7 @@ function CRM() {
       {/* ═══ Prior Outreach Alert Modal ═══ */}
       {outreachAlert && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-slate-900 rounded-xl shadow-2xl w-full max-w-md mx-4 overflow-hidden border border-white/[0.06]">
+          <div className="bg-black rounded-xl shadow-2xl w-full max-w-md mx-4 overflow-hidden border border-white/[0.06]">
             <div className="px-5 py-4 bg-amber-500/10 border-b border-amber-500/20">
               <div className="flex items-center gap-2">
                 <AlertCircle className="w-5 h-5 text-amber-400" />
@@ -882,7 +882,7 @@ function CRM() {
             </div>
             <div className="px-5 py-3 bg-white/[0.02] border-t border-white/[0.06] flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2">
               <button onClick={() => setOutreachAlert(null)} className="px-3 py-1.5 text-xs font-medium text-slate-400 bg-white/5 border border-white/[0.06] rounded-lg hover:bg-white/[0.08]">Cancel</button>
-              <button onClick={handleOutreachAlertProceed} className={cn('px-3 py-1.5 text-xs font-medium text-white rounded-lg', outreachAlert.action === 'call' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-novalyte-600 hover:bg-novalyte-700')}>
+              <button onClick={handleOutreachAlertProceed} className={cn('px-3 py-1.5 text-xs font-medium text-white rounded-lg', outreachAlert.action === 'call' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-novalyte-600 hover:bg-novalyte-400')}>
                 {outreachAlert.action === 'call' ? 'Call Anyway' : 'Email Anyway'}
               </button>
             </div>

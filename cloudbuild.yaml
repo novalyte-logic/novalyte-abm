@@ -1,0 +1,53 @@
+steps:
+  # Build the Docker image with all env vars baked in
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '--build-arg=VITE_GEMINI_API_KEY=AIzaSyDIT3BiGI8oHUBOkK5YOQTZ2K_6d5imJRg'
+      - '--build-arg=VITE_GOOGLE_PLACES_API_KEY=AIzaSyAAgoLaT659mmZxChmcPTG_BoxHn9JN8h8'
+      - '--build-arg=VITE_EXA_API_KEY=5344135b-3cae-4c3f-96f3-930fe38b34e8'
+      - '--build-arg=VITE_REVENUEBASE_API_KEY=30b0f56d-5d6e-4991-8d7a-44a63bc2f251'
+      - '--build-arg=VITE_SERPAPI_KEY=a47712c89f18f8fe8ae40efab78694ae00b27e2f772b679ede44db691e182f3e'
+      - '--build-arg=VITE_GCP_PROJECT_ID=warp-486714'
+      - '--build-arg=VITE_GCP_LOCATION=us-central1'
+      - '--build-arg=VITE_VAPI_API_KEY=00a3ce0e-184f-4666-bee4-53cb1329f08e'
+      - '--build-arg=VITE_VAPI_PUBLIC_KEY=02755a18-7be8-450f-9cc9-c48eac3a8b78'
+      - '--build-arg=VITE_VAPI_PHONE_NUMBER_ID=d19319ae-e8cf-4677-93aa-4ab32dd89b9e'
+      - '--build-arg=VITE_VAPI_PHONE_NUMBER=+16017168585'
+      - '--build-arg=VITE_VAPI_ASSISTANT_ID=ecf5cc7c-f3fd-448e-a578-3251bbe4757a'
+      - '--build-arg=VITE_SUPABASE_URL=https://zatsxsaetybdyzhxbnnj.supabase.co'
+      - '--build-arg=VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InphdHN4c2FldHliZHl6aHhibm5qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA0NjAxMTIsImV4cCI6MjA4NjAzNjExMn0.HDnOqdgEH_PniqwM3sxWIE97wt0NqICylBrnj-78waQ'
+      - '--build-arg=VITE_SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InphdHN4c2FldHliZHl6aHhibm5qIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MDQ2MDExMiwiZXhwIjoyMDg2MDM2MTEyfQ.7tDKpMkqPfjbehLxBRwqng59NhyODA8MltX-LADIC4U'
+      - '--build-arg=VITE_RESEND_API_KEY=re_Z3UZwYcZ_HuvmJWX1A4PP3NdDf291hfi8'
+      - '--build-arg=VITE_APOLLO_API_KEY=pkJODwKLfQOLU4iZKacw8w'
+      - '--build-arg=VITE_APOLLO_API_KEYS=pkJODwKLfQOLU4iZKacw8w,2lgVXhPJ1nFP3Y7m564kOg'
+      - '-t'
+      - 'gcr.io/warp-486714/novalyte-abm'
+      - '.'
+
+  # Push to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/warp-486714/novalyte-abm']
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'novalyte-abm'
+      - '--image=gcr.io/warp-486714/novalyte-abm'
+      - '--region=us-central1'
+      - '--platform=managed'
+      - '--allow-unauthenticated'
+      - '--port=8080'
+      - '--memory=256Mi'
+      - '--cpu=1'
+      - '--min-instances=0'
+      - '--max-instances=3'
+
+images:
+  - 'gcr.io/warp-486714/novalyte-abm'
+
+options:
+  logging: CLOUD_LOGGING_ONLY

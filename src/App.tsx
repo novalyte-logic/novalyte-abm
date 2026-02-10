@@ -3,7 +3,7 @@ import {
   LayoutDashboard, TrendingUp, Building2, Users, Phone,
   Settings, Cloud, CloudOff, RefreshCw, Brain, ChevronLeft,
   ChevronRight, DownloadCloud, Trash2, Sparkles, Mail, DollarSign,
-  Menu, X,
+  Menu, X, UserCheck,
 } from 'lucide-react';
 import { useAppStore } from './stores/appStore';
 import { cn } from './utils/cn';
@@ -14,11 +14,13 @@ import CRM from './components/CRM';
 import VoiceAgent from './components/VoiceAgent';
 import EmailOutreach from './components/EmailOutreach';
 import RevenueForecastPage from './components/RevenueForecast';
+import PatientLeads from './components/PatientLeads';
 
 const navItems = [
   { id: 'dashboard', label: 'Command Center', shortLabel: 'Home', icon: LayoutDashboard, badge: null },
   { id: 'keywords', label: 'Keyword Scanner', shortLabel: 'Keywords', icon: TrendingUp, badge: 'trends' },
   { id: 'clinics', label: 'Clinic Discovery', shortLabel: 'Clinics', icon: Building2, badge: 'clinics' },
+  { id: 'leads', label: 'Patient Leads', shortLabel: 'Leads', icon: UserCheck, badge: null },
   { id: 'crm', label: 'Pipeline CRM', shortLabel: 'CRM', icon: Users, badge: 'contacts' },
   { id: 'voice', label: 'Voice Agent', shortLabel: 'Voice', icon: Phone, badge: 'calls' },
   { id: 'email', label: 'Email Outreach', shortLabel: 'Email', icon: Mail, badge: 'emails' },
@@ -54,6 +56,7 @@ function App() {
       case 'keywords': return <KeywordScanner />;
       case 'clinics': return <ClinicDiscovery />;
       case 'crm': return <CRM />;
+      case 'leads': return <PatientLeads />;
       case 'voice': return <VoiceAgent />;
       case 'email': return <EmailOutreach />;
       case 'forecast': return <RevenueForecastPage />;
@@ -90,16 +93,19 @@ function App() {
   };
 
   return (
-    <div className="flex h-screen bg-slate-950">
+    <div className="flex h-screen bg-black">
 
       {/* ═══ Mobile Top Bar — visible < lg ═══ */}
-      <div className="lg:hidden fixed top-0 left-0 right-0 z-50 bg-slate-950/95 backdrop-blur-xl border-b border-white/[0.06] px-4 py-3 flex items-center justify-between safe-top">
+      <div className="lg:hidden fixed top-0 left-0 right-0 z-50 bg-black/95 backdrop-blur-xl border-b border-white/[0.06] px-4 py-3 flex items-center justify-between safe-top">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 bg-gradient-to-br from-novalyte-400 via-novalyte-500 to-accent-500 rounded-lg flex items-center justify-center text-xs font-black shadow-lg shadow-novalyte-500/20">
-            N
+          <div className="w-8 h-8 rounded-full border-2 border-novalyte-400 bg-black flex items-center justify-center relative shadow-lg shadow-novalyte-500/20">
+            <span className="text-novalyte-400 font-extrabold text-xs leading-none">N</span>
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div className="w-[2px] h-[65%] bg-novalyte-400 rotate-[-40deg] rounded-full" />
+            </div>
           </div>
           <div>
-            <h1 className="text-sm font-bold text-slate-100">Novalyte</h1>
+            <h1 className="text-sm font-bold text-slate-100">Novalyte<span className="text-novalyte-400 text-[6px] align-super">™</span> AI</h1>
             <p className="text-[9px] text-slate-500">AI Intelligence Engine</p>
           </div>
         </div>
@@ -123,7 +129,7 @@ function App() {
       {mobileMenuOpen && (
         <div className="lg:hidden fixed inset-0 z-40 pt-[60px]">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setMobileMenuOpen(false)} />
-          <div className="relative bg-slate-900/98 backdrop-blur-xl border-b border-white/[0.06] shadow-2xl animate-fade-in max-h-[70vh] overflow-y-auto">
+          <div className="relative bg-black/98 backdrop-blur-xl border-b border-white/[0.06] shadow-2xl animate-fade-in max-h-[70vh] overflow-y-auto">
             <div className="p-3 space-y-0.5">
               {navItems.map(item => {
                 const Icon = item.icon;
@@ -160,17 +166,20 @@ function App() {
 
       {/* ═══ Desktop Sidebar — hidden < lg ═══ */}
       <aside className={cn(
-        'hidden lg:flex bg-slate-950 text-white flex-col transition-all duration-300 ease-in-out shrink-0',
+        'hidden lg:flex bg-black text-white flex-col transition-all duration-300 ease-in-out shrink-0',
         collapsed ? 'w-[68px]' : 'w-[240px]'
       )}>
         {/* Logo */}
         <div className={cn('border-b border-white/5 flex items-center', collapsed ? 'px-3 py-4 justify-center' : 'px-5 py-5')}>
-          <div className="w-9 h-9 bg-gradient-to-br from-novalyte-400 via-novalyte-500 to-accent-500 rounded-xl flex items-center justify-center text-sm font-black shrink-0 shadow-lg shadow-novalyte-500/20">
-            N
+          <div className="w-9 h-9 rounded-full border-2 border-novalyte-400 bg-black flex items-center justify-center relative shrink-0 shadow-lg shadow-novalyte-500/20">
+            <span className="text-novalyte-400 font-extrabold text-sm leading-none">N</span>
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div className="w-[2px] h-[70%] bg-novalyte-400 rotate-[-40deg] rounded-full" />
+            </div>
           </div>
           {!collapsed && (
             <div className="ml-3 min-w-0">
-              <h1 className="text-sm font-bold tracking-tight">Novalyte</h1>
+              <h1 className="text-sm font-bold tracking-tight">Novalyte<span className="text-novalyte-400 text-[7px] align-super">™</span> AI</h1>
               <p className="text-[10px] text-slate-500 flex items-center gap-1">
                 <Brain className="w-2.5 h-2.5" /> AI Intelligence Engine
               </p>
@@ -270,7 +279,7 @@ function App() {
               {!collapsed && 'Tools'}
             </button>
             {showExportMenu && (
-              <div className={cn('absolute bottom-full mb-1 bg-slate-900 border border-white/10 rounded-lg shadow-xl z-50 py-1 min-w-[160px]',
+              <div className={cn('absolute bottom-full mb-1 bg-black border border-white/10 rounded-lg shadow-xl z-50 py-1 min-w-[160px]',
                 collapsed ? 'left-full ml-2' : 'left-0'
               )}>
                 <button onClick={handleExport} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-300 hover:bg-white/5">
@@ -302,7 +311,7 @@ function App() {
       </main>
 
       {/* ═══ Mobile Bottom Nav — visible < lg ═══ */}
-      <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-slate-950/95 backdrop-blur-xl border-t border-white/[0.06] safe-bottom">
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-black/95 backdrop-blur-xl border-t border-white/[0.06] safe-bottom">
         <div className="flex items-center justify-around px-1 py-1">
           {navItems.slice(0, 5).map(item => {
             const Icon = item.icon;

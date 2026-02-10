@@ -1,0 +1,13 @@
+{
+  "assistantId": "ecf5cc7c-f3fd-448e-a578-3251bbe4757a",
+  "phoneNumberId": "d19319ae-e8cf-4677-93aa-4ab32dd89b9e",
+  "customer": {"number": "+14159181995", "name": "Jamil - Test 2"},
+  "assistantOverrides": {
+    "firstMessage": "Hi, is this Jamil? ... This is Kaizen from Novalyte. Im calling because we have a few pre-qualified patients in San Francisco looking for testosterone therapy, and your clinic came up as a top match. Do you have capacity for a few more patients this week?",
+    "silenceTimeoutSeconds": 20,
+    "maxDurationSeconds": 180,
+    "endCallFunctionEnabled": true,
+    "endCallMessage": "Thanks for your time Jamil. Have a great day!",
+    "hipaaEnabled": true
+  }
+}

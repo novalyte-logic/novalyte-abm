@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react';
 import {
   Building2, Search, RefreshCw, MapPin, Star, Phone, Globe, Plus,
   ExternalLink, Users, Radar, X, ChevronDown, ChevronUp,
-  UserSearch, Trash2, CheckCircle2, LayoutGrid, LayoutList,
+  UserSearch, Trash2, CheckCircle2, LayoutGrid, LayoutList, Mail,
 } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
 import { clinicService } from '../services/clinicService';
@@ -164,15 +164,52 @@ function ClinicDiscovery() {
   };
 
   const handleEnrichClinic = async (clinic: Clinic) => {
-    toast.loading('Finding decision maker...', { id: `enrich-${clinic.id}` });
+    toast.loading('Finding decision makers...', { id: `enrich-${clinic.id}` });
     try {
       const dms = await enrichmentService.findDecisionMakers(clinic);
       if (!dms.length) { toast('No decision makers found', { id: `enrich-${clinic.id}` }); return; }
+      
+      // Store ALL decision makers with emails as enrichedContacts
+      const enrichedContacts = dms
+        .filter((d: any) => d.email || d.phone)
+        .map((d: any) => ({
+          name: `${d.firstName} ${d.lastName}`.trim(),
+          title: d.title || '',
+          role: d.role || 'clinic_manager',
+          email: d.email || undefined,
+          phone: d.phone || undefined,
+          linkedInUrl: d.linkedInUrl || undefined,
+          confidence: d.confidence || 0,
+          source: d.source || 'unknown',
+          enrichedAt: new Date().toISOString(),
+        }));
+
       const best = selectBestDM(dms)!;
-      const upd: any = { managerName: `${best.firstName} ${best.lastName}`.trim(), managerEmail: best.email };
-      if (best.role === 'owner' || best.role === 'medical_director') { upd.ownerName = upd.managerName; upd.ownerEmail = best.email; }
+      const upd: any = {
+        managerName: `${best.firstName} ${best.lastName}`.trim(),
+        managerEmail: best.email,
+        enrichedContacts,
+      };
+      if (best.role === 'owner' || best.role === 'medical_director') {
+        upd.ownerName = upd.managerName;
+        upd.ownerEmail = best.email;
+      }
+      if (best.phone && !clinic.phone) upd.phone = best.phone;
+      
+      // Find a second DM for owner/director slot
+      const second = dms.find((d: any) => d.id !== best.id && d.email);
+      if (second && (!upd.ownerName || upd.ownerName === upd.managerName)) {
+        upd.ownerName = `${second.firstName} ${second.lastName}`.trim();
+        upd.ownerEmail = second.email;
+      }
+      
       updateClinic(clinic.id, upd);
-      toast.success('Decision maker found', { id: `enrich-${clinic.id}` });
+      // Also update the selectedClinic if it's the same one (for drawer refresh)
+      if (selectedClinic?.id === clinic.id) {
+        setSelectedClinic({ ...clinic, ...upd });
+      }
+      const emailCount = enrichedContacts.filter((c: any) => c.email).length;
+      toast.success(`Found ${enrichedContacts.length} contacts (${emailCount} emails)`, { id: `enrich-${clinic.id}` });
     } catch { toast.error('Enrichment failed', { id: `enrich-${clinic.id}` }); }
   };
 
@@ -190,7 +227,20 @@ function ClinicDiscovery() {
         const dms = await enrichmentService.findDecisionMakers(clinic);
         best = selectBestDM(dms);
         if (best) {
-          const upd: any = { managerName: `${best.firstName} ${best.lastName}`.trim(), managerEmail: best.email };
+          const enrichedContacts = dms
+            .filter((d: any) => d.email || d.phone)
+            .map((d: any) => ({
+              name: `${d.firstName} ${d.lastName}`.trim(),
+              title: d.title || '',
+              role: d.role || 'clinic_manager',
+              email: d.email || undefined,
+              phone: d.phone || undefined,
+              linkedInUrl: d.linkedInUrl || undefined,
+              confidence: d.confidence || 0,
+              source: d.source || 'unknown',
+              enrichedAt: new Date().toISOString(),
+            }));
+          const upd: any = { managerName: `${best.firstName} ${best.lastName}`.trim(), managerEmail: best.email, enrichedContacts };
           if (best.role === 'owner' || best.role === 'medical_director') { upd.ownerName = upd.managerName; upd.ownerEmail = best.email; }
           updateClinic(clinic.id, upd);
         }
@@ -537,7 +587,7 @@ function ClinicDiscovery() {
       {selectedClinic && (
         <div className="fixed inset-0 z-50 flex justify-end">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setSelectedClinic(null)} />
-          <div className="relative w-full sm:w-[440px] bg-slate-900 shadow-2xl border-l border-white/[0.06] flex flex-col">
+          <div className="relative w-full sm:w-[440px] bg-black shadow-2xl border-l border-white/[0.06] flex flex-col">
           {/* Drawer header */}
           <div className="p-4 sm:p-5 border-b border-white/[0.06] flex items-start justify-between">
             <div className="flex-1 min-w-0">
@@ -600,15 +650,55 @@ function ClinicDiscovery() {
               )}
             </div>
 
-            {/* Decision Maker */}
+            {/* Decision Makers */}
             <div className="bg-white/[0.03] rounded-xl p-4 space-y-3">
               <div className="flex items-center justify-between">
-                <h4 className="text-sm font-semibold text-slate-300">Decision Maker</h4>
+                <h4 className="text-sm font-semibold text-slate-300">Decision Makers</h4>
                 <button onClick={() => handleEnrichClinic(selectedClinic)} className="text-xs text-novalyte-400 hover:underline flex items-center gap-1">
-                  <UserSearch className="w-3 h-3" /> {selectedClinic.managerName ? 'Re-enrich' : 'Find DM'}
+                  <UserSearch className="w-3 h-3" /> {selectedClinic.enrichedContacts?.length ? 'Re-enrich' : 'Find DM'}
                 </button>
               </div>
-              {selectedClinic.managerName ? (
+              {selectedClinic.enrichedContacts && selectedClinic.enrichedContacts.length > 0 ? (
+                <div className="space-y-2.5">
+                  {selectedClinic.enrichedContacts.map((ec: any, idx: number) => (
+                    <div key={idx} className="bg-white/[0.02] border border-white/[0.06] rounded-lg p-3 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-white">{ec.name}</span>
+                        <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded',
+                          ec.confidence >= 90 ? 'bg-emerald-500/15 text-emerald-400' :
+                          ec.confidence >= 70 ? 'bg-cyan-500/15 text-cyan-400' :
+                          ec.confidence >= 50 ? 'bg-amber-500/15 text-amber-400' :
+                          'bg-slate-500/15 text-slate-400'
+                        )}>{ec.confidence}%</span>
+                      </div>
+                      {ec.title && <p className="text-[10px] text-slate-500">{ec.title}</p>}
+                      <div className="flex items-center gap-1.5 text-[10px] text-slate-500">
+                        <span className={cn('px-1.5 py-0.5 rounded capitalize',
+                          ec.role === 'owner' ? 'bg-purple-500/10 text-purple-400' :
+                          ec.role === 'medical_director' ? 'bg-blue-500/10 text-blue-400' :
+                          'bg-white/5 text-slate-400'
+                        )}>{(ec.role || '').replace(/_/g, ' ')}</span>
+                        <span className="px-1.5 py-0.5 rounded bg-white/5 text-slate-500">{ec.source}</span>
+                      </div>
+                      {ec.email && (
+                        <a href={`mailto:${ec.email}`} className="flex items-center gap-1.5 text-xs text-novalyte-400 hover:underline">
+                          <Mail className="w-3 h-3" /> {ec.email}
+                        </a>
+                      )}
+                      {ec.phone && (
+                        <a href={`tel:${ec.phone}`} className="flex items-center gap-1.5 text-xs text-emerald-400 hover:underline">
+                          <Phone className="w-3 h-3" /> {ec.phone}
+                        </a>
+                      )}
+                      {ec.linkedInUrl && (
+                        <a href={ec.linkedInUrl} target="_blank" rel="noopener" className="flex items-center gap-1.5 text-xs text-blue-400 hover:underline">
+                          <ExternalLink className="w-3 h-3" /> LinkedIn
+                        </a>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : selectedClinic.managerName ? (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-slate-500">Name</span>
@@ -617,18 +707,12 @@ function ClinicDiscovery() {
                   {selectedClinic.managerEmail && (
                     <div className="flex items-center justify-between">
                       <span className="text-sm text-slate-500">Email</span>
-                      <span className="text-sm font-medium text-novalyte-400">{selectedClinic.managerEmail}</span>
-                    </div>
-                  )}
-                  {selectedClinic.ownerName && selectedClinic.ownerName !== selectedClinic.managerName && (
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-slate-500">Owner</span>
-                      <span className="text-sm font-medium text-slate-300">{selectedClinic.ownerName}</span>
+                      <a href={`mailto:${selectedClinic.managerEmail}`} className="text-sm font-medium text-novalyte-400 hover:underline">{selectedClinic.managerEmail}</a>
                     </div>
                   )}
                 </div>
               ) : (
-                <p className="text-xs text-slate-600 italic">No decision maker found yet. Click "Find DM" to enrich.</p>
+                <p className="text-xs text-slate-600 italic">No decision makers found yet. Click "Find DM" to enrich.</p>
               )}
             </div>
 

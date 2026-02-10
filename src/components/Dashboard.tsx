@@ -81,7 +81,7 @@ function Dashboard() {
         <div>
           <div className="flex items-center gap-2 sm:gap-3 mb-1 flex-wrap">
             <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">Command Center</h1>
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold bg-gradient-to-r from-novalyte-500 to-accent-500 text-white shadow-lg shadow-novalyte-500/20">
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold bg-gradient-to-r from-novalyte-500 to-accent-500 text-black shadow-lg shadow-novalyte-500/20">
               <Brain className="w-3 h-3" /> AI-Powered
             </span>
           </div>

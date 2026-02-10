@@ -380,7 +380,7 @@ function KeywordScanner() {
       {selectedTrend && (
         <div className="fixed inset-0 z-50 flex justify-end">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setSelectedTrend(null)} />
-          <div className="relative w-full sm:w-[420px] bg-slate-900 shadow-2xl border-l border-white/[0.06] flex flex-col">
+          <div className="relative w-full sm:w-[420px] bg-black shadow-2xl border-l border-white/[0.06] flex flex-col">
           {/* Drawer header */}
           <div className="p-5 border-b border-white/[0.06] flex items-start justify-between">
             <div>

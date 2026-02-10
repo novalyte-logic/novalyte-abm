@@ -65,6 +65,19 @@ export const AFFLUENT_MARKETS: Omit<MarketZone, 'id'>[] = [
   { city: 'Newport Beach', state: 'CA', metropolitanArea: 'Orange County', medianIncome: 155000, population: 85000, affluenceScore: 9, coordinates: { lat: 33.6189, lng: -117.9289 } },
 ];
 
+// Enriched contact from Apollo/NPI/email intel
+export interface EnrichedContact {
+  name: string;
+  title: string;
+  role: string;
+  email?: string;
+  phone?: string;
+  linkedInUrl?: string;
+  confidence: number; // 0-100
+  source: string;
+  enrichedAt: string;
+}
+
 // Clinic information
 export interface Clinic {
   id: string;
@@ -90,6 +103,8 @@ export interface Clinic {
   // Optional cached owner / director info
   ownerName?: string;
   ownerEmail?: string;
+  // All enriched decision makers (from Apollo, NPI, etc.)
+  enrichedContacts?: EnrichedContact[];
   services: string[];
   marketZone: MarketZone;
   discoveredAt: Date;
