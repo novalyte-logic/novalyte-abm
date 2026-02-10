@@ -46,3 +46,6 @@ coverage
 # GCP service account keys
 gcp-sa-key.json
 *-sa-key.json
+
+# Deploy script (reads secrets from .env)
+deploy.sh
