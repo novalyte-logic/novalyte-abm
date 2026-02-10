@@ -3,7 +3,7 @@ import {
   LayoutDashboard, TrendingUp, Building2, Users, Phone,
   Settings, Cloud, CloudOff, RefreshCw, Brain, ChevronLeft,
   ChevronRight, DownloadCloud, Trash2, Sparkles, Mail, DollarSign,
-  Menu, X, UserCheck,
+  Menu, X, UserCheck, Lock, Eye, EyeOff,
 } from 'lucide-react';
 import { useAppStore } from './stores/appStore';
 import { cn } from './utils/cn';
@@ -27,6 +27,88 @@ const navItems = [
   { id: 'forecast', label: 'Revenue Forecast', shortLabel: 'Revenue', icon: DollarSign, badge: null },
 ] as const;
 
+const ACCESS_CODE = '2104';
+
+function LoginScreen({ onAuth }: { onAuth: () => void }) {
+  const [code, setCode] = useState('');
+  const [error, setError] = useState(false);
+  const [showCode, setShowCode] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setTimeout(() => {
+      if (code === ACCESS_CODE) {
+        sessionStorage.setItem('novalyte-auth', 'true');
+        onAuth();
+      } else {
+        setError(true);
+        setCode('');
+        setTimeout(() => setError(false), 2000);
+      }
+      setLoading(false);
+    }, 400);
+  };
+
+  return (
+    <div className="min-h-screen bg-black flex items-center justify-center p-4">
+      <div className="w-full max-w-sm space-y-8 animate-fade-in">
+        {/* Logo */}
+        <div className="text-center">
+          <div className="w-16 h-16 rounded-full border-2 border-novalyte-400 bg-black flex items-center justify-center relative mx-auto shadow-lg shadow-novalyte-500/30">
+            <span className="text-novalyte-400 font-extrabold text-2xl leading-none">N</span>
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div className="w-[3px] h-[70%] bg-novalyte-400 rotate-[-40deg] rounded-full" />
+            </div>
+          </div>
+          <h1 className="mt-4 text-xl font-bold text-slate-100">Novalyte<span className="text-novalyte-400 text-[8px] align-super">™</span> AI</h1>
+          <p className="text-xs text-slate-500 mt-1">AI Intelligence Engine · Restricted Access</p>
+        </div>
+
+        {/* Login Form */}
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="glass-card p-6 space-y-4">
+            <div className="flex items-center gap-2 mb-2">
+              <Lock className="w-4 h-4 text-novalyte-400" />
+              <span className="text-sm font-medium text-slate-300">Enter Access Code</span>
+            </div>
+            <div className="relative">
+              <input
+                type={showCode ? 'text' : 'password'}
+                value={code}
+                onChange={e => { setCode(e.target.value); setError(false); }}
+                placeholder="••••"
+                maxLength={10}
+                autoFocus
+                className={cn(
+                  'w-full px-4 py-3 rounded-lg bg-white/[0.03] border text-center text-lg font-mono tracking-[0.5em] text-slate-200 placeholder:text-slate-700 outline-none transition-all',
+                  error ? 'border-red-500/50 shake' : 'border-white/[0.08] focus:border-novalyte-500/40'
+                )}
+              />
+              <button type="button" onClick={() => setShowCode(!showCode)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400 transition-colors">
+                {showCode ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            {error && (
+              <p className="text-xs text-red-400 text-center animate-fade-in">Invalid access code</p>
+            )}
+            <button type="submit" disabled={!code.trim() || loading}
+              className="w-full py-3 rounded-lg font-medium text-sm transition-all bg-[#06B6D4] text-[#000000] hover:bg-[#22D3EE] disabled:opacity-40 disabled:cursor-not-allowed">
+              {loading ? 'Verifying...' : 'Access Platform'}
+            </button>
+          </div>
+        </form>
+
+        <p className="text-[10px] text-slate-600 text-center">
+          Authorized personnel only · Novalyte AI © {new Date().getFullYear()}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const {
     currentView, setCurrentView, supabaseReady, isSyncing,
@@ -36,8 +118,13 @@ function App() {
   const [collapsed, setCollapsed] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [authenticated, setAuthenticated] = useState(() => sessionStorage.getItem('novalyte-auth') === 'true');
 
   useEffect(() => { initSupabase(); }, [initSupabase]);
+
+  if (!authenticated) {
+    return <LoginScreen onAuth={() => setAuthenticated(true)} />;
+  }
 
   const getBadgeCount = (badge: string | null) => {
     switch (badge) {

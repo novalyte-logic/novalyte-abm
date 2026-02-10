@@ -1,13 +1,13 @@
 {
-  "assistantId": "ecf5cc7c-f3fd-448e-a578-3251bbe4757a",
-  "phoneNumberId": "d19319ae-e8cf-4677-93aa-4ab32dd89b9e",
-  "customer": {"number": "+14159181995", "name": "Jamil - Test 2"},
+  "assistantId": "YOUR_VAPI_ASSISTANT_ID",
+  "phoneNumberId": "YOUR_VAPI_PHONE_NUMBER_ID",
+  "customer": {"number": "+1XXXXXXXXXX", "name": "Test Call"},
   "assistantOverrides": {
-    "firstMessage": "Hi, is this Jamil? ... This is Kaizen from Novalyte. Im calling because we have a few pre-qualified patients in San Francisco looking for testosterone therapy, and your clinic came up as a top match. Do you have capacity for a few more patients this week?",
+    "firstMessage": "Hi, this is Kaizen from Novalyte AI. How are you today?",
     "silenceTimeoutSeconds": 20,
     "maxDurationSeconds": 180,
     "endCallFunctionEnabled": true,
-    "endCallMessage": "Thanks for your time Jamil. Have a great day!",
+    "endCallMessage": "Thanks for your time. Have a great day!",
     "hipaaEnabled": true
   }
 }
