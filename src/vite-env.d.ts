@@ -28,3 +28,44 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+// Google Maps types
+declare namespace google.maps {
+  class Map {
+    constructor(element: HTMLElement, options: MapOptions);
+  }
+  interface MapOptions {
+    center: { lat: number; lng: number };
+    zoom: number;
+    styles?: any[];
+    disableDefaultUI?: boolean;
+    zoomControl?: boolean;
+    mapTypeControl?: boolean;
+    streetViewControl?: boolean;
+    fullscreenControl?: boolean;
+    backgroundColor?: string;
+  }
+  class Marker {
+    constructor(options: MarkerOptions);
+    addListener(event: string, handler: () => void): void;
+  }
+  interface MarkerOptions {
+    position: { lat: number; lng: number };
+    map: Map;
+    icon?: any;
+    title?: string;
+  }
+  class InfoWindow {
+    constructor(options: { content: string });
+    open(map: Map, marker: Marker): void;
+  }
+  const SymbolPath: {
+    CIRCLE: number;
+  };
+  namespace marker {
+    class AdvancedMarkerElement {
+      constructor(options: { map: Map; position: { lat: number; lng: number }; content: HTMLElement; title?: string });
+      map: Map | null;
+    }
+  }
+}

@@ -31,8 +31,9 @@ export interface EmailTemplate {
 
 /* ─── Config ─── */
 
+const RESEND_PROXY = 'https://us-central1-intel-landing-page.cloudfunctions.net/resend-proxy';
 const RESEND_BASE = 'https://api.resend.com';
-const FROM_ADDRESS = 'Novalyte <outreach@novalyte.io>';
+const FROM_ADDRESS = 'Novalyte AI <noreply@novalyte.io>';
 
 /* ─── Templates ─── */
 
@@ -133,15 +134,14 @@ export class ResendService {
     market: string;
     tags?: { name: string; value: string }[];
   }): Promise<SentEmail> {
-    if (!this.isConfigured) throw new Error('Resend API key not configured');
-
+    // Use Cloud Function proxy (handles API key server-side)
     const { data } = await axios.post<{ id: string }>(
-      `${RESEND_BASE}/emails`,
+      RESEND_PROXY,
       {
-        from: FROM_ADDRESS,
-        to: [params.to],
+        to: params.to,
         subject: params.subject,
         html: params.html,
+        from: FROM_ADDRESS,
         tags: [
           { name: 'contact_id', value: params.contactId },
           { name: 'clinic', value: params.clinicName.slice(0, 256) },
@@ -149,7 +149,7 @@ export class ResendService {
           ...(params.tags || []),
         ],
       },
-      { headers: this.headers }
+      { headers: { 'Content-Type': 'application/json' } }
     );
 
     return {
