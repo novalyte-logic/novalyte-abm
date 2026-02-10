@@ -3,7 +3,7 @@ import {
   LayoutDashboard, TrendingUp, Building2, Users, Phone,
   Settings, Cloud, CloudOff, RefreshCw, Brain, ChevronLeft,
   ChevronRight, DownloadCloud, Trash2, Sparkles, Mail, DollarSign,
-  Menu, X, UserCheck, Lock, Eye, EyeOff,
+  Menu, X, UserCheck, Lock, Eye, EyeOff, BarChart3,
 } from 'lucide-react';
 import { useAppStore } from './stores/appStore';
 import { cn } from './utils/cn';
@@ -15,6 +15,7 @@ import VoiceAgent from './components/VoiceAgent';
 import EmailOutreach from './components/EmailOutreach';
 import RevenueForecastPage from './components/RevenueForecast';
 import PatientLeads from './components/PatientLeads';
+import AdAnalytics from './components/AdAnalytics';
 
 const navItems = [
   { id: 'dashboard', label: 'Command Center', shortLabel: 'Home', icon: LayoutDashboard, badge: null },
@@ -24,6 +25,7 @@ const navItems = [
   { id: 'crm', label: 'Pipeline CRM', shortLabel: 'CRM', icon: Users, badge: 'contacts' },
   { id: 'voice', label: 'Voice Agent', shortLabel: 'Voice', icon: Phone, badge: 'calls' },
   { id: 'email', label: 'Email Outreach', shortLabel: 'Email', icon: Mail, badge: 'emails' },
+  { id: 'analytics', label: 'Ad Analytics', shortLabel: 'Ads', icon: BarChart3, badge: null },
   { id: 'forecast', label: 'Revenue Forecast', shortLabel: 'Revenue', icon: DollarSign, badge: null },
 ] as const;
 
@@ -146,6 +148,7 @@ function App() {
       case 'leads': return <PatientLeads />;
       case 'voice': return <VoiceAgent />;
       case 'email': return <EmailOutreach />;
+      case 'analytics': return <AdAnalytics />;
       case 'forecast': return <RevenueForecastPage />;
       default: return <Dashboard />;
     }
