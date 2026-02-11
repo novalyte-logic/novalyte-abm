@@ -16,6 +16,7 @@ import EmailOutreach from './components/EmailOutreach';
 import RevenueForecastPage from './components/RevenueForecast';
 import PatientLeads from './components/PatientLeads';
 import AdAnalytics from './components/AdAnalytics';
+import AIEngine from './components/AIEngine';
 
 const navItems = [
   { id: 'dashboard', label: 'Command Center', shortLabel: 'Home', icon: LayoutDashboard, badge: null },
@@ -27,6 +28,7 @@ const navItems = [
   { id: 'email', label: 'Email Outreach', shortLabel: 'Email', icon: Mail, badge: 'emails' },
   { id: 'analytics', label: 'Ad Analytics', shortLabel: 'Ads', icon: BarChart3, badge: null },
   { id: 'forecast', label: 'Revenue Forecast', shortLabel: 'Revenue', icon: DollarSign, badge: null },
+  { id: 'aiengine', label: 'AI Engine', shortLabel: 'AI', icon: Brain, badge: null },
 ] as const;
 
 const ACCESS_CODE = '2104';
@@ -150,6 +152,7 @@ function App() {
       case 'email': return <EmailOutreach />;
       case 'analytics': return <AdAnalytics />;
       case 'forecast': return <RevenueForecastPage />;
+      case 'aiengine': return <AIEngine />;
       default: return <Dashboard />;
     }
   };
@@ -430,7 +433,7 @@ function App() {
           <button onClick={() => setMobileMenuOpen(true)}
             className={cn(
               'flex flex-col items-center gap-0.5 py-1.5 px-2 rounded-lg min-w-0 flex-1 transition-all',
-              ['email', 'forecast'].includes(currentView) ? 'text-novalyte-400' : 'text-slate-500 active:text-slate-300'
+              ['email', 'forecast', 'aiengine'].includes(currentView) ? 'text-novalyte-400' : 'text-slate-500 active:text-slate-300'
             )}>
             <Menu className="w-5 h-5" />
             <span className="text-[10px] font-medium">More</span>

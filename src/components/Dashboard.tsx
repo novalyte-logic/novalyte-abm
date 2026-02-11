@@ -456,6 +456,7 @@ function Dashboard() {
             </div>
           </div>
           {[
+            { label: 'AI Engine', desc: 'BigQuery ML scoring', icon: Brain, view: 'aiengine' as const, color: 'text-purple-400 bg-purple-500/10' },
             { label: 'Scan Keywords', desc: 'Find trending demand', icon: TrendingUp, view: 'keywords' as const, color: 'text-emerald-400 bg-emerald-500/10' },
             { label: 'Discover Clinics', desc: 'Find new prospects', icon: Radar, view: 'clinics' as const, color: 'text-novalyte-400 bg-novalyte-500/10' },
             { label: 'Open Pipeline', desc: 'Manage outreach', icon: Users, view: 'crm' as const, color: 'text-violet-400 bg-violet-500/10' },
