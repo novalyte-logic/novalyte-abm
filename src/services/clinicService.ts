@@ -58,9 +58,9 @@ export class ClinicService {
    * Uses the discovery service (Google Places API New) which returns
    * phone, website, rating, etc. in a single call.
    */
-  async discoverClinicsInMarket(market: MarketZone): Promise<Clinic[]> {
+  async discoverClinicsInMarket(market: MarketZone, onProgress?: (msg: string, found: number) => void): Promise<Clinic[]> {
     try {
-      const places = await discoveryService.gridSearchMarket(market);
+      const places = await discoveryService.gridSearchMarket(market, { onProgress });
       if (places && places.length > 0) {
         return places.map(p => this.mapPlacesResultToClinic(p, market));
       }

@@ -110,7 +110,10 @@ function ClinicDiscovery() {
     setDiscoveryProgress(`Scanning ${selectedMarket.city}...`);
     toast.loading('Discovering clinics...', { id: 'discovering' });
     try {
-      const found = await clinicService.discoverClinicsInMarket(selectedMarket);
+      const found = await clinicService.discoverClinicsInMarket(selectedMarket, (msg, count) => {
+        setDiscoveryProgress(msg);
+        toast.loading(`${msg} (${count} found)`, { id: 'discovering' });
+      });
       addClinics(found);
       toast.success(`Found ${found.length} clinics in ${selectedMarket.city}`, { id: 'discovering' });
     } catch { toast.error('Failed to discover clinics', { id: 'discovering' }); }

@@ -19,65 +19,29 @@ export interface PlaceLike {
 
 /**
  * Search queries explicitly targeting men's health clinics only.
- * Every query includes "men" or a men-specific service to avoid
- * returning women's clinics, general spas, OB-GYN, etc.
+ * Prioritized by effectiveness — top queries first for fast results.
  */
 const DISCOVERY_QUERIES = [
-  // Core men's health
+  // Highest-yield queries (most clinics found per call)
   "men's health clinic",
-  "men's wellness clinic",
-  "men's vitality clinic",
-  "male health center",
-  "men's clinic",
-  // Hormone / TRT (inherently male-focused)
-  "testosterone replacement therapy clinic",
-  "TRT clinic",
   "testosterone clinic",
-  "low testosterone treatment clinic",
-  "low T clinic",
-  "hormone therapy for men",
-  "hormone optimization men",
-  "bioidentical hormone therapy men",
-  "male hormone clinic",
-  // ED / Sexual health (inherently male)
+  "TRT clinic",
+  "men's wellness clinic",
   "erectile dysfunction clinic",
-  "ED treatment clinic",
-  "men's sexual health clinic",
-  "men's sexual wellness",
-  "P-shot clinic",
-  // Weight loss — men specific
-  "men's weight loss clinic",
-  "semaglutide clinic for men",
-  "GLP-1 weight loss men",
-  "tirzepatide men",
-  // Med spa — men specific
+  "men's hormone clinic",
   "men's med spa",
-  "med spa for men",
-  // IV / Peptides — men specific
-  "IV therapy men's health",
+  "men's weight loss clinic",
+  "men's sexual health clinic",
   "peptide therapy men",
-  "NAD+ therapy men",
-  // Hair (male pattern)
-  "men's hair restoration",
-  "male hair transplant",
-  "men's hair loss treatment",
-  "PRP hair treatment men",
-  // Urology (inherently male-focused in this context)
-  "men's urology clinic",
-  "urologist men's health",
-  // Functional / Longevity — men specific
-  "men's longevity clinic",
   "men's anti-aging clinic",
-  "men's performance clinic",
-  "executive men's health",
-  "concierge men's health",
+  "men's hair restoration",
+  // Secondary queries (catch stragglers)
+  "low testosterone treatment",
+  "semaglutide clinic for men",
+  "men's vitality clinic",
+  "men's urology clinic",
+  "men's longevity clinic",
   "men's regenerative medicine",
-  // Specific branded searches that are always men's
-  "Gameday Men's Health",
-  "Ageless Men's Health",
-  "Vault Health",
-  "Hone Health",
-  "Opt Health",
 ];
 
 /**
@@ -120,7 +84,6 @@ const PLACE_FIELDS = [
  */
 function gridPoints(lat: number, lng: number, offsetMiles: number): Array<{ lat: number; lng: number }> {
   if (offsetMiles <= 0) return [{ lat, lng }];
-  // ~1 degree lat ≈ 69 miles, ~1 degree lng ≈ 69 * cos(lat) miles
   const latOff = offsetMiles / 69;
   const lngOff = offsetMiles / (69 * Math.cos((lat * Math.PI) / 180));
   return [
@@ -129,10 +92,6 @@ function gridPoints(lat: number, lng: number, offsetMiles: number): Array<{ lat:
     { lat: lat - latOff, lng },               // S
     { lat, lng: lng + lngOff },               // E
     { lat, lng: lng - lngOff },               // W
-    { lat: lat + latOff, lng: lng + lngOff }, // NE
-    { lat: lat + latOff, lng: lng - lngOff }, // NW
-    { lat: lat - latOff, lng: lng + lngOff }, // SE
-    { lat: lat - latOff, lng: lng - lngOff }, // SW
   ];
 }
 
@@ -141,7 +100,8 @@ export class DiscoveryService {
 
   constructor() {
     const env: any = (typeof import.meta !== 'undefined' && (import.meta as any).env) ? (import.meta as any).env : {};
-    this.apiKey = env?.VITE_GEMINI_API_KEY || env?.VITE_GOOGLE_PLACES_API_KEY || '';
+    // Prefer the dedicated Places API key over the Gemini key
+    this.apiKey = env?.VITE_GOOGLE_PLACES_API_KEY || env?.VITE_GEMINI_API_KEY || '';
   }
 
   private delay(ms: number) {
@@ -209,10 +169,11 @@ export class DiscoveryService {
    * Exhaustive grid search over a single market.
    *
    * Strategy:
-   * - 9 grid points (center + 8 surrounding at ~15mi offset)
-   * - Every discovery query at each grid point
-   * - 20 results per API call × 44 queries × 9 points = up to 7,920 raw hits
-   * - Deduped by placeId → typically yields 50-200+ unique clinics per market
+   * - 5 grid points (center + N/S/E/W at ~15mi offset)
+   * - 18 discovery queries at each grid point
+   * - 20 results per API call × 18 queries × 5 points = up to 1,800 raw hits
+   * - Deduped by placeId → typically yields 30-150+ unique clinics per market
+   * - ~30 seconds per market
    */
   async gridSearchMarket(
     market: MarketZone,
@@ -230,7 +191,7 @@ export class DiscoveryService {
     for (const query of DISCOVERY_QUERIES) {
       for (const pt of points) {
         opsDone++;
-        if (opsDone % 9 === 1) {
+        if (opsDone % 5 === 1) {
           // Report progress every full query cycle (once per query across all points)
           onProgress?.(
             `${market.city}: "${query}" (${Math.ceil(opsDone / points.length)}/${DISCOVERY_QUERIES.length})`,
@@ -243,7 +204,7 @@ export class DiscoveryService {
           pt.lat, pt.lng, radiusMeters
         );
         allResults.push(...results);
-        await this.delay(200);
+        await this.delay(100);
       }
     }
 
