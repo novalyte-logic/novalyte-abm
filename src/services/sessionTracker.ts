@@ -179,22 +179,68 @@ async function sendSlackAlert(session: SessionInfo) {
   }
 }
 
-/** Flush session data periodically (call on beforeunload) */
-export function setupSessionFlush() {
+/** Trigger global force-logout — kicks everyone out */
+export async function forceLogoutAll(): Promise<boolean> {
+  if (!supabase) return false;
+  try {
+    const now = new Date().toISOString();
+    await supabase.from('app_config').upsert({ key: 'force_logout_at', value: now, updated_at: now }, { onConflict: 'key' });
+
+    // Send Slack alert about the force logout
+    if (SLACK_WEBHOOK) {
+      fetch(SLACK_WEBHOOK, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: '🔒 *Global Logout Triggered* — All sessions have been terminated by admin.' }),
+      }).catch(() => {});
+    }
+
+    return true;
+  } catch (err) {
+    console.warn('Force logout failed:', err);
+    return false;
+  }
+}
+
+/** Check if current session has been force-logged-out */
+export async function checkForceLogout(): Promise<boolean> {
+  if (!supabase) return false;
+  const session = getSession();
+  if (!session) return false;
+  try {
+    const { data } = await supabase.from('app_config').select('value').eq('key', 'force_logout_at').single();
+    if (!data?.value) return false;
+    const forceTime = new Date(data.value).getTime();
+    const loginTime = new Date(session.loginTime).getTime();
+    return forceTime > loginTime;
+  } catch { return false; }
+}
+
+/** Flush session data periodically + poll for force-logout (call on beforeunload) */
+export function setupSessionFlush(onForceLogout: () => void) {
   // Flush every 30 seconds
-  const interval = setInterval(() => {
+  const flushInterval = setInterval(() => {
     const session = getSession();
     if (session) persistToSupabase(session).catch(() => {});
   }, 30000);
 
+  // Poll for force-logout every 10 seconds
+  const logoutInterval = setInterval(async () => {
+    const kicked = await checkForceLogout();
+    if (kicked) {
+      clearInterval(flushInterval);
+      clearInterval(logoutInterval);
+      onForceLogout();
+    }
+  }, 10000);
+
   // Flush on page unload
-  window.addEventListener('beforeunload', () => {
-    endSession();
-    clearInterval(interval);
-  });
+  const handleUnload = () => { endSession(); };
+  window.addEventListener('beforeunload', handleUnload);
 
   return () => {
-    clearInterval(interval);
-    window.removeEventListener('beforeunload', () => endSession());
+    clearInterval(flushInterval);
+    clearInterval(logoutInterval);
+    window.removeEventListener('beforeunload', handleUnload);
   };
 }

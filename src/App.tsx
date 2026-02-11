@@ -3,9 +3,9 @@ import {
   LayoutDashboard, TrendingUp, Building2, Users, Phone,
   Settings, Cloud, CloudOff, RefreshCw, Brain, ChevronLeft,
   ChevronRight, DownloadCloud, Trash2, Sparkles, Mail, DollarSign,
-  Menu, X, UserCheck, Lock, Eye, EyeOff, BarChart3, ArrowRight,
+  Menu, X, UserCheck, Lock, Eye, EyeOff, BarChart3, ArrowRight, LogOut,
 } from 'lucide-react';
-import { startSession, trackPageView, trackAction, setupSessionFlush, getCurrentSession, type SessionInfo } from './services/sessionTracker';
+import { startSession, trackPageView, trackAction, setupSessionFlush, getCurrentSession, endSession, forceLogoutAll, type SessionInfo } from './services/sessionTracker';
 import { useAppStore } from './stores/appStore';
 import { cn } from './utils/cn';
 import Dashboard from './components/Dashboard';
@@ -168,16 +168,23 @@ function App() {
 
   useEffect(() => { initSupabase(); }, [initSupabase]);
 
-  // Setup session flush on mount
+  const doLogout = useCallback(() => {
+    endSession();
+    sessionStorage.removeItem('novalyte-auth');
+    sessionStorage.removeItem('novalyte-session-info');
+    setAuthenticated(false);
+    setSessionInfo(null);
+  }, []);
+
+  // Setup session flush + force-logout polling
   useEffect(() => {
     if (authenticated && sessionInfo) {
-      const cleanup = setupSessionFlush();
+      const cleanup = setupSessionFlush(doLogout);
       return cleanup;
     }
-  }, [authenticated, sessionInfo]);
+  }, [authenticated, sessionInfo, doLogout]);
 
   // Track page views
-  const prevView = useCallback(() => currentView, [currentView]);
   useEffect(() => {
     if (authenticated && sessionInfo) {
       trackPageView(currentView);
@@ -239,6 +246,22 @@ function App() {
     localStorage.removeItem('novalyte-store');
     window.location.reload();
   };
+
+  const handleLogout = () => {
+    trackAction('logout', 'User logged out');
+    doLogout();
+  };
+
+  const handleForceLogoutAll = async () => {
+    if (!confirm('This will log out EVERYONE currently in the dashboard. Continue?')) return;
+    trackAction('force_logout', 'Admin triggered global logout');
+    const ok = await forceLogoutAll();
+    if (ok) {
+      doLogout();
+    }
+  };
+
+  const isAdmin = sessionInfo?.role === 'admin';
 
   const handleMobileNav = (id: string) => {
     setCurrentView(id as typeof currentView);
@@ -309,9 +332,14 @@ function App() {
               <button onClick={handleExport} className="flex-1 btn btn-secondary gap-2 text-xs justify-center">
                 <DownloadCloud className="w-3.5 h-3.5" /> Export
               </button>
-              <button onClick={handleClear} className="flex-1 btn btn-danger gap-2 text-xs justify-center">
-                <Trash2 className="w-3.5 h-3.5" /> Clear Data
+              <button onClick={handleLogout} className="flex-1 btn btn-secondary gap-2 text-xs justify-center">
+                <LogOut className="w-3.5 h-3.5" /> Logout
               </button>
+              {isAdmin && (
+                <button onClick={handleForceLogoutAll} className="flex-1 btn btn-danger gap-2 text-xs justify-center">
+                  <LogOut className="w-3.5 h-3.5" /> Logout All
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -441,6 +469,15 @@ function App() {
                 <button onClick={handleClear} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-red-400 hover:bg-white/5">
                   <Trash2 className="w-3.5 h-3.5" /> Clear All Data
                 </button>
+                <div className="border-t border-white/[0.06] my-1" />
+                <button onClick={handleLogout} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-300 hover:bg-white/5">
+                  <LogOut className="w-3.5 h-3.5" /> Logout
+                </button>
+                {isAdmin && (
+                  <button onClick={handleForceLogoutAll} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-red-400 hover:bg-white/5">
+                    <LogOut className="w-3.5 h-3.5" /> Logout All Sessions
+                  </button>
+                )}
               </div>
             )}
           </div>
