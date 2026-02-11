@@ -26,7 +26,7 @@ const navItems = [
   { id: 'clinics', label: 'Clinic Discovery', shortLabel: 'Clinics', icon: Building2, badge: 'clinics' },
   { id: 'email', label: 'Email Outreach', shortLabel: 'Email', icon: Mail, badge: 'emails' },
   { id: 'keywords', label: 'Keyword Scanner', shortLabel: 'Keywords', icon: TrendingUp, badge: 'trends' },
-  { id: 'leads', label: 'Patient Leads', shortLabel: 'Leads', icon: UserCheck, badge: null },
+  { id: 'leads', label: 'Patient Leads', shortLabel: 'Leads', icon: UserCheck, badge: 'leads' },
   { id: 'crm', label: 'Pipeline CRM', shortLabel: 'CRM', icon: Users, badge: 'contacts' },
   { id: 'forecast', label: 'Revenue Forecast', shortLabel: 'Revenue', icon: DollarSign, badge: null },
   { id: 'voice', label: 'Voice Agent', shortLabel: 'Voice', icon: Phone, badge: 'calls' },
@@ -202,6 +202,9 @@ function App() {
       case 'contacts': return contacts.length || null;
       case 'calls': return callHistory.length || null;
       case 'emails': return sentEmails.length || null;
+      case 'leads': {
+        try { const raw = localStorage.getItem('novalyte_ai_engine_clinics'); return raw ? JSON.parse(raw).length || null : null; } catch { return null; }
+      }
       default: return null;
     }
   };

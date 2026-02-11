@@ -7,6 +7,7 @@ import {
   ArrowRight, Square, CheckSquare, ExternalLink, Copy
 } from 'lucide-react';
 import { cn } from '../utils/cn';
+import { useAppStore } from '../stores/appStore';
 import toast from 'react-hot-toast';
 
 type PipelineStep = 'idle' | 'syncing' | 'enriching' | 'training' | 'scoring' | 'complete' | 'error';
@@ -188,8 +189,6 @@ function waitUntil(startTime: number, targetMs: number): Promise<void> {
   return new Promise(r => setTimeout(r, remaining));
 }
 
-const RESEND_PROXY = 'https://us-central1-intel-landing-page.cloudfunctions.net/resend-proxy';
-
 // ─── Expandable Pipeline Node ───
 function PipelineNode({
   icon: Icon, label, sublabel, active, done, expanded, onToggle, stats, children
@@ -266,19 +265,29 @@ function MetricDrillDown({
   const pushToCRM = () => {
     if (selected.size === 0) { toast.error('Select items first'); return; }
     const sel = data.filter(r => selected.has(r.clinic_id || r.id));
-    try {
-      const existing = JSON.parse(localStorage.getItem('novalyte_crm_imports') || '[]');
-      const newImports = sel.map(p => ({
-        id: p.clinic_id || p.id, name: p.name, city: p.city, state: p.state,
-        phone: p.phone, email: p.email, score: p.propensity_score || 0,
-        tier: p.propensity_tier || 'cold', affluence: p.affluence_score,
-        services: p.services, importedAt: new Date().toISOString(), source: 'ai-engine-drilldown',
-      }));
-      const merged = [...newImports, ...existing.filter((e: any) => !selected.has(e.id))];
-      localStorage.setItem('novalyte_crm_imports', JSON.stringify(merged.slice(0, 500)));
-      toast.success(`${sel.length} pushed to Pipeline CRM`);
-      setSelected(new Set());
-    } catch { toast.error('Failed to push to CRM'); }
+    const { addContacts, contacts: existingContacts, markets } = useAppStore.getState();
+    const existingClinicIds = new Set(existingContacts.map(c => c.clinic.id));
+    const newContacts: any[] = [];
+    for (const p of sel) {
+      const cid = p.clinic_id || p.id;
+      if (existingClinicIds.has(cid)) continue;
+      const market = markets.find(m => m.city.toLowerCase() === (p.city || '').toLowerCase()) || markets[0];
+      newContacts.push({
+        id: `contact-${cid}-${Date.now()}`, clinic: {
+          id: cid, name: p.name, type: 'mens_health_clinic' as const,
+          address: { street: '', city: p.city || '', state: p.state || '', zip: '', country: 'USA' },
+          phone: p.phone || '', email: p.email || undefined, managerEmail: p.email || undefined,
+          services: p.services || [], marketZone: market, discoveredAt: new Date(), lastUpdated: new Date(),
+        },
+        decisionMaker: undefined, status: p.email ? 'ready_to_call' : 'researching',
+        priority: (p.propensity_tier === 'hot' ? 'high' : 'medium') as any,
+        score: Math.round((p.propensity_score || 0) * 100), tags: p.services || [],
+        notes: '', keywordMatches: [], activities: [], createdAt: new Date(), updatedAt: new Date(),
+      });
+    }
+    if (newContacts.length > 0) { addContacts(newContacts); toast.success(`${newContacts.length} pushed to Pipeline CRM`); }
+    else toast('All selected already in CRM');
+    setSelected(new Set());
   };
 
   return (
@@ -356,8 +365,8 @@ export default function AIEngine() {
   const [liveNumbers, setLiveNumbers] = useState(saved.current?.liveNumbers || { clinics: 0, leads: 0, accuracy: 0, hot: 0, warm: 0, cold: 0, enriched: 0 });
   const [pumpRolling, setPumpRolling] = useState(false);
   const [pumpScore, setPumpScore] = useState<number>(0);
-  const [addingToSequence, setAddingToSequence] = useState(false);
-  const [sequenceProgress, setSequenceProgress] = useState({ sent: 0, total: 0, model: '' });
+  const [addingToSequence] = useState(false);
+  const [sequenceProgress] = useState({ sent: 0, total: 0, model: '' });
   const [expandedNodes, setExpandedNodes] = useState<Record<string, boolean>>(saved.current?.expandedNodes || {});
   const [selectedClinics, setSelectedClinics] = useState<Set<string>>(new Set());
   const [filterTier, setFilterTier] = useState<'all' | 'hot' | 'warm' | 'cold'>('all');
@@ -606,7 +615,7 @@ export default function AIEngine() {
     }
   };
 
-  // ═══ ADD TO 5-DAY DRIP SEQUENCE ═══
+  // ═══ ADD TO 5-DAY DRIP SEQUENCE (STAGE ONLY — NO AUTO-SEND) ═══
   const addToSequenceWithAI = async () => {
     // Use selected clinics if any, otherwise top prospects with email
     const pool = selectedClinics.size > 0
@@ -622,90 +631,162 @@ export default function AIEngine() {
       days.push(targets.slice(d * perDay, (d + 1) * perDay));
     }
 
-    // Save sequence schedule to localStorage
+    // Save sequence schedule to localStorage — ALL staged as "intro_email", nothing sent
     const sequenceId = `seq_${Date.now()}`;
     const schedule = days.map((batch, dayIdx) => ({
       day: dayIdx + 1,
       sendDate: new Date(Date.now() + dayIdx * 86400000).toISOString().slice(0, 10),
-      clinics: batch.map(p => ({ clinic_id: p.clinic_id, name: p.name, email: p.email, city: p.city, state: p.state, tier: p.propensity_tier, score: p.propensity_score, services: p.services })),
-      status: dayIdx === 0 ? 'sending' : 'scheduled',
+      clinics: batch.map(p => ({
+        clinic_id: p.clinic_id, name: p.name, email: p.email,
+        city: p.city, state: p.state, tier: p.propensity_tier,
+        score: p.propensity_score, services: p.services,
+      })),
+      status: 'staged', // NOT sent — staged for Intro Email
       sent: 0,
+      phase: 'intro_email',
     }));
 
     // Store the full sequence
     const sequences = JSON.parse(localStorage.getItem('novalyte_drip_sequences') || '[]');
-    sequences.unshift({ id: sequenceId, createdAt: new Date().toISOString(), totalClinics: targets.length, schedule });
+    sequences.unshift({
+      id: sequenceId,
+      createdAt: new Date().toISOString(),
+      totalClinics: targets.length,
+      schedule,
+      pipeline: 'intro_email', // Current pipeline phase
+    });
     localStorage.setItem('novalyte_drip_sequences', JSON.stringify(sequences.slice(0, 10)));
+    setDripSequences(JSON.parse(localStorage.getItem('novalyte_drip_sequences') || '[]'));
 
-    // Send Day 1 now, rest are scheduled
-    setAddingToSequence(true);
-    setSequenceProgress({ sent: 0, total: days[0].length, model: 'Day 1 of 5' });
-    let sent = 0, failed = 0;
+    // Also push these clinics to CRM as "ready_to_call" so they appear in Email Outreach sequences
+    const { addContacts, contacts: existingContacts, markets } = useAppStore.getState();
+    const existingClinicIds = new Set(existingContacts.map(c => c.clinic.id));
+    const newContacts: any[] = [];
 
-    for (const prospect of days[0]) {
-      try {
-        const greeting = prospect.name ? `the team at ${prospect.name}` : 'there';
-        const location = `${prospect.city}, ${prospect.state}`;
-        const scoreLabel = prospect.propensity_score >= 0.7 ? 'high-demand' : 'growing';
-        const services = (prospect.services || []).slice(0, 3).join(', ') || "men's health services";
+    for (const p of targets) {
+      if (existingClinicIds.has(p.clinic_id)) continue;
+      const market = markets.find(m =>
+        m.city.toLowerCase() === (p.city || '').toLowerCase() &&
+        m.state.toLowerCase() === (p.state || '').toLowerCase()
+      ) || markets[0];
 
-        const subject = `${prospect.name} — ${scoreLabel} patient demand in ${prospect.city}`;
-        const html = `<div style="font-family:Inter,Arial,sans-serif;color:#1e293b;max-width:600px;margin:0 auto;padding:24px;">
-  <p style="font-size:15px;line-height:1.7;">Hi ${greeting},</p>
-  <p style="font-size:15px;line-height:1.7;">I came across <strong>${prospect.name}</strong> while analyzing ${services} providers in ${location}.</p>
-  <p style="font-size:15px;line-height:1.7;">Our intelligence platform flagged your market as <strong>${scoreLabel}</strong> — clinics in your area offering similar services are seeing <strong>30-40% increases</strong> in qualified patient inquiries within 90 days.</p>
-  <p style="font-size:15px;line-height:1.7;">Would a quick 15-minute call this week make sense to explore if there's a fit?</p>
-  <p style="font-size:15px;line-height:1.7;margin-top:24px;">Best,<br/><strong>Jamil</strong><br/><span style="color:#64748b;font-size:13px;">Novalyte · Men's Health Growth Platform</span></p>
-</div>`;
-
-        await fetch(RESEND_PROXY, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            to: prospect.email, from: 'Novalyte AI <noreply@novalyte.io>',
-            subject, html, reply_to: 'admin@novalyte.io',
-            tags: [{ name: 'source', value: 'ai-engine-drip' }, { name: 'clinic', value: (prospect.name || '').slice(0, 256) }, { name: 'tier', value: prospect.propensity_tier }, { name: 'day', value: '1' }],
-          }),
-        });
-        sent++;
-        setSequenceProgress(prev => ({ ...prev, sent }));
-        await new Promise(r => setTimeout(r, 600));
-      } catch { failed++; }
+      newContacts.push({
+        id: `contact-${p.clinic_id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        clinic: {
+          id: p.clinic_id, name: p.name, type: 'mens_health_clinic' as const,
+          address: { street: '', city: p.city || '', state: p.state || '', zip: '', country: 'USA' },
+          phone: '', email: p.email || undefined,
+          managerEmail: p.email || undefined,
+          services: p.services || [], marketZone: market,
+          discoveredAt: new Date(), lastUpdated: new Date(),
+        },
+        decisionMaker: p.email ? {
+          id: `dm-${p.clinic_id}`, clinicId: p.clinic_id,
+          firstName: (p.name || '').split(' ')[0] || 'Team',
+          lastName: '', email: p.email, title: 'Decision Maker',
+          role: 'clinic_manager' as const, confidence: 60, source: 'ai-engine' as const,
+        } : undefined,
+        status: 'ready_to_call',
+        priority: p.propensity_tier === 'hot' ? 'high' : 'medium',
+        score: Math.round((p.propensity_score || 0) * 100),
+        tags: [...(p.services || []), 'drip-sequence'],
+        notes: `Staged for drip sequence · Intro Email phase · Score: ${((p.propensity_score || 0) * 100).toFixed(0)}%`,
+        keywordMatches: [],
+        activities: [{
+          id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          type: 'note',
+          description: `Staged in drip sequence (${p.propensity_tier} tier) — awaiting Bedrock personalization`,
+          timestamp: new Date(),
+        }],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
     }
 
-    // Update schedule status
-    schedule[0].status = 'sent';
-    schedule[0].sent = sent;
-    sequences[0].schedule = schedule;
-    localStorage.setItem('novalyte_drip_sequences', JSON.stringify(sequences));
+    if (newContacts.length > 0) addContacts(newContacts);
 
-    setAddingToSequence(false);
-    setDripSequences(JSON.parse(localStorage.getItem('novalyte_drip_sequences') || '[]'));
-    const remaining = targets.length - days[0].length;
-    if (sent > 0) toast.success(`Day 1: Sent ${sent} emails${failed > 0 ? ` (${failed} failed)` : ''}. ${remaining} more scheduled over next 4 days.`);
-    else toast.error('Failed to send. Check Resend config.');
+    toast.success(`${targets.length} clinics staged in Intro Email phase → Go to Email Outreach to personalize with Bedrock & send`);
+    setSelectedClinics(new Set());
   };
 
   // ═══ PUSH SELECTED TO CRM ═══
-  const pushToCRM = async () => {
+  const pushToCRM = () => {
     if (selectedClinics.size === 0) { toast.error('Select clinics first'); return; }
     setPushingToCRM(true);
     const selected = topProspects.filter(p => selectedClinics.has(p.clinic_id));
-    try {
-      const existing = JSON.parse(localStorage.getItem('novalyte_crm_imports') || '[]');
-      const newImports = selected.map(p => ({
-        id: p.clinic_id, name: p.name, city: p.city, state: p.state,
-        phone: p.phone, email: p.email, score: p.propensity_score,
-        tier: p.propensity_tier, affluence: p.affluence_score,
-        services: p.services, importedAt: new Date().toISOString(), source: 'ai-engine',
-      }));
-      const merged = [...newImports, ...existing.filter((e: any) => !selectedClinics.has(e.id))];
-      localStorage.setItem('novalyte_crm_imports', JSON.stringify(merged.slice(0, 500)));
-      toast.success(`${selected.length} clinics pushed to Pipeline CRM`);
-      setSelectedClinics(new Set());
-    } catch (err) {
-      toast.error('Failed to push to CRM');
+
+    // Build CRM contacts directly and push to Zustand store — instant, no API calls
+    const { addContacts, contacts, markets } = useAppStore.getState();
+    const existingClinicIds = new Set(contacts.map(c => c.clinic.id));
+    const newContacts: any[] = [];
+
+    for (const p of selected) {
+      if (existingClinicIds.has(p.clinic_id)) continue;
+
+      // Find matching market zone
+      const market = markets.find(m =>
+        m.city.toLowerCase() === (p.city || '').toLowerCase() &&
+        m.state.toLowerCase() === (p.state || '').toLowerCase()
+      ) || markets[0];
+
+      const clinic = {
+        id: p.clinic_id,
+        name: p.name,
+        type: 'mens_health_clinic' as const,
+        address: { street: '', city: p.city || '', state: p.state || '', zip: '', country: 'USA' },
+        phone: p.phone || '',
+        email: p.email || undefined,
+        website: p.website || undefined,
+        managerName: p.dm_name || undefined,
+        managerEmail: p.dm_email || p.email || undefined,
+        services: p.services || [],
+        marketZone: market,
+        rating: p.rating || undefined,
+        reviewCount: p.review_count || 0,
+        discoveredAt: new Date(),
+        lastUpdated: new Date(),
+      };
+
+      const dm = p.dm_name ? {
+        id: `dm-${p.clinic_id}`,
+        clinicId: p.clinic_id,
+        firstName: (p.dm_name || '').split(' ')[0] || '',
+        lastName: (p.dm_name || '').split(' ').slice(1).join(' ') || '',
+        email: p.dm_email || p.email || '',
+        title: 'Decision Maker',
+        role: 'clinic_manager' as const,
+        confidence: 70,
+        source: 'ai-engine' as const,
+      } : undefined;
+
+      newContacts.push({
+        id: `contact-${p.clinic_id}-${Date.now()}`,
+        clinic,
+        decisionMaker: dm,
+        status: dm?.email ? 'ready_to_call' : 'researching',
+        priority: p.propensity_tier === 'hot' ? 'high' : p.propensity_tier === 'warm' ? 'medium' : 'low',
+        score: Math.round((p.propensity_score || 0) * 100),
+        tags: p.services || [],
+        notes: `Imported from AI Engine · Lead Score: ${((p.propensity_score || 0) * 100).toFixed(0)}% · Tier: ${p.propensity_tier}`,
+        keywordMatches: [],
+        activities: [{
+          id: `act-${Date.now()}`,
+          type: 'note',
+          description: `Added to CRM from AI Engine (${p.propensity_tier} tier, ${((p.propensity_score || 0) * 100).toFixed(0)}% score)`,
+          timestamp: new Date(),
+        }],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
     }
+
+    if (newContacts.length > 0) {
+      addContacts(newContacts);
+      toast.success(`${newContacts.length} clinics added to Pipeline CRM`);
+    } else {
+      toast('All selected clinics are already in CRM');
+    }
+    setSelectedClinics(new Set());
     setPushingToCRM(false);
   };
 
@@ -1028,7 +1109,7 @@ export default function AIEngine() {
                     addingToSequence ? 'bg-white/5 text-slate-500' :
                     emailProspectCount > 0 ? 'bg-[#06B6D4] text-black hover:bg-[#22D3EE]' : 'bg-white/5 text-slate-500 cursor-not-allowed')}>
                   {addingToSequence ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> {sequenceProgress.sent}/{sequenceProgress.total} ({sequenceProgress.model})</> :
-                    <><Send className="w-3.5 h-3.5" /> {selectedClinics.size > 0 ? `Drip ${Math.min(selectedClinics.size, 100)} over 5 Days` : `Drip Top ${Math.min(emailProspectCount, 100)} over 5 Days`}</>}
+                    <><Send className="w-3.5 h-3.5" /> {selectedClinics.size > 0 ? `Stage ${Math.min(selectedClinics.size, 100)} for Drip` : `Stage Top ${Math.min(emailProspectCount, 100)} for Drip`}</>}
                 </button>
                 <button onClick={exportProspects} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-xs font-medium transition-all">
                   <Download className="w-3.5 h-3.5" /> CSV
@@ -1198,7 +1279,9 @@ export default function AIEngine() {
               <div className="flex items-center justify-between mb-3">
                 <div>
                   <p className="text-sm font-medium text-slate-300">{seq.totalClinics} clinics · 5-day drip</p>
-                  <p className="text-[10px] text-slate-500">Created {new Date(seq.createdAt).toLocaleString()}</p>
+                  <p className="text-[10px] text-slate-500">Created {new Date(seq.createdAt).toLocaleString()}
+                    {seq.pipeline && <span className="ml-2 px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 font-semibold">Phase: {(seq.pipeline || '').replace(/_/g, ' ')}</span>}
+                  </p>
                 </div>
               </div>
               <div className="grid grid-cols-5 gap-2">
@@ -1206,14 +1289,16 @@ export default function AIEngine() {
                   <div key={di} className={cn('p-2.5 rounded-lg border text-center transition-all',
                     day.status === 'sent' ? 'bg-emerald-500/10 border-emerald-500/30' :
                     day.status === 'sending' ? 'bg-[#06B6D4]/10 border-[#06B6D4]/30 animate-pulse' :
+                    day.status === 'staged' ? 'bg-amber-500/10 border-amber-500/30' :
                     'bg-white/[0.02] border-white/[0.06]')}>
                     <p className="text-[10px] text-slate-500 mb-1">Day {day.day}</p>
                     <p className="text-sm font-bold text-slate-200">{day.clinics?.length || 0}</p>
                     <p className="text-[9px] mt-1">{day.sendDate}</p>
                     <span className={cn('text-[9px] font-semibold mt-1 inline-block',
                       day.status === 'sent' ? 'text-emerald-400' :
-                      day.status === 'sending' ? 'text-[#06B6D4]' : 'text-slate-500')}>
-                      {day.status === 'sent' ? `✓ ${day.sent} sent` : day.status === 'sending' ? 'Sending...' : 'Scheduled'}
+                      day.status === 'sending' ? 'text-[#06B6D4]' :
+                      day.status === 'staged' ? 'text-amber-400' : 'text-slate-500')}>
+                      {day.status === 'sent' ? `✓ ${day.sent} sent` : day.status === 'sending' ? 'Sending...' : day.status === 'staged' ? '⏳ Staged' : 'Scheduled'}
                     </span>
                   </div>
                 ))}

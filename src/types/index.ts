@@ -154,7 +154,8 @@ export type DataSource =
   | 'npi'
   | 'linkedin'
   | 'manual'
-  | 'website_scrape';
+  | 'website_scrape'
+  | 'ai-engine';
 
 // CRM Contact - combined clinic + decision maker for outreach
 export interface CRMContact {

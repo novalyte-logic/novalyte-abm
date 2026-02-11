@@ -1360,6 +1360,21 @@ function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEm
   const [execProgress, setExecProgress] = useState({ done: 0, total: 0 });
   const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'paused' | 'completed' | 'replied'>('all');
 
+  /* ─── Source detection helpers ─── */
+  const getSource = (c: CRMContact): 'ai-engine' | 'discovery' | 'crm' => {
+    if (c.tags?.includes('drip-sequence')) return 'ai-engine';
+    if (c.decisionMaker?.source === 'ai-engine') return 'ai-engine';
+    if (c.tags?.includes('clinic-discovery')) return 'discovery';
+    return 'crm';
+  };
+  const sourceConfig = {
+    'ai-engine': { label: 'AI Engine', color: 'text-novalyte-400', bg: 'bg-novalyte-500/10', ring: 'ring-novalyte-500/20' },
+    'discovery': { label: 'Discovery', color: 'text-emerald-400', bg: 'bg-emerald-500/10', ring: 'ring-emerald-500/20' },
+    'crm': { label: 'CRM', color: 'text-blue-400', bg: 'bg-blue-500/10', ring: 'ring-blue-500/20' },
+  };
+
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'ai-engine' | 'discovery' | 'crm'>('all');
+
   /* ─── Eligible contacts for enrollment ─── */
   const eligible = useMemo(() => {
     return contacts.filter(c => {
@@ -1368,15 +1383,32 @@ function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEm
     }).sort((a, b) => b.score - a.score);
   }, [contacts, enrollments]);
 
+  /* ─── Source counts ─── */
+  const sourceCounts = useMemo(() => {
+    const counts = { 'ai-engine': 0, 'discovery': 0, 'crm': 0 };
+    eligible.forEach(c => { counts[getSource(c)]++; });
+    return counts;
+  }, [eligible]);
+
+  /* ─── AI Engine staged clinics (drip-sequence tag, not yet enrolled) ─── */
+  const stagedFromAI = useMemo(() =>
+    eligible.filter(c => c.tags?.includes('drip-sequence')),
+    [eligible]
+  );
+
   const filteredEnroll = useMemo(() => {
-    if (!enrollSearch) return eligible;
+    let list = eligible;
+    if (sourceFilter !== 'all') {
+      list = list.filter(c => getSource(c) === sourceFilter);
+    }
+    if (!enrollSearch) return list;
     const q = enrollSearch.toLowerCase();
-    return eligible.filter(c =>
+    return list.filter(c =>
       c.clinic.name.toLowerCase().includes(q) ||
       c.clinic.address.city.toLowerCase().includes(q) ||
       (c.decisionMaker && `${c.decisionMaker.firstName} ${c.decisionMaker.lastName}`.toLowerCase().includes(q))
     );
-  }, [eligible, enrollSearch]);
+  }, [eligible, enrollSearch, sourceFilter]);
 
   /* ─── Enrollment list with filters ─── */
   const enrollmentList = useMemo(() => {
@@ -1747,7 +1779,12 @@ function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEm
       <div className="flex flex-wrap items-center gap-2">
         <button onClick={() => setShowEnroll(!showEnroll)}
           className={cn('btn gap-1.5 text-xs', showEnroll ? 'btn-primary' : 'btn-secondary')}>
-          <Plus className="w-3.5 h-3.5" /> Enroll Clinics
+          <Plus className="w-3.5 h-3.5" /> Import Prospects
+          {stagedFromAI.length > 0 && !showEnroll && (
+            <span className="ml-1 px-1.5 py-0.5 rounded-full bg-novalyte-500/20 text-novalyte-300 text-[9px] font-bold animate-pulse">
+              {stagedFromAI.length} staged
+            </span>
+          )}
         </button>
         <button onClick={handleGenerateAll} disabled={generating || enrollments.size === 0}
           className="btn btn-secondary gap-1.5 text-xs">
@@ -1795,35 +1832,92 @@ function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEm
         </div>
       )}
 
-      {/* ─── Enroll Panel ─── */}
+      {/* ─── Import Prospects Panel ─── */}
       {showEnroll && (
         <div className="glass-card p-4 space-y-3">
+          {/* Header */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Users className="w-4 h-4 text-novalyte-400" />
-              <h4 className="text-sm font-semibold text-slate-200">Enroll Clinics</h4>
+              <h4 className="text-sm font-semibold text-slate-200">Import Prospects</h4>
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/5 text-slate-500">
                 {enrollSelected.size} selected · {eligible.length} available
               </span>
             </div>
             <div className="flex items-center gap-2">
-              <button onClick={() => setEnrollSelected(new Set(eligible.slice(0, 50).map(c => c.id)))}
+              <button onClick={() => setEnrollSelected(new Set(filteredEnroll.slice(0, 50).map(c => c.id)))}
                 className="text-[11px] text-novalyte-400 hover:text-novalyte-300">Select All</button>
               <button onClick={() => setEnrollSelected(new Set())}
                 className="text-[11px] text-slate-500 hover:text-slate-300">Clear</button>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Search className="w-4 h-4 text-slate-500" />
-            <input value={enrollSearch} onChange={e => setEnrollSearch(e.target.value)}
-              placeholder="Search clinics..."
-              className="flex-1 bg-transparent text-sm text-slate-200 placeholder:text-slate-500 outline-none" />
+
+          {/* Quick Import Sources */}
+          <div className="flex flex-wrap gap-2">
+            {stagedFromAI.length > 0 && (
+              <button onClick={() => {
+                setEnrollSelected(new Set(stagedFromAI.slice(0, 50).map(c => c.id)));
+                setSourceFilter('ai-engine');
+              }}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-novalyte-500/10 text-novalyte-300 border border-novalyte-500/20 hover:bg-novalyte-500/20 transition-all">
+                <Zap className="w-3.5 h-3.5" />
+                Import AI Engine Staged ({stagedFromAI.length})
+              </button>
+            )}
+            {sourceCounts['discovery'] > 0 && (
+              <button onClick={() => {
+                const disc = eligible.filter(c => getSource(c) === 'discovery');
+                setEnrollSelected(new Set(disc.slice(0, 50).map(c => c.id)));
+                setSourceFilter('discovery');
+              }}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 hover:bg-emerald-500/20 transition-all">
+                <Search className="w-3.5 h-3.5" />
+                Import from Discovery ({sourceCounts['discovery']})
+              </button>
+            )}
+            {sourceCounts['crm'] > 0 && (
+              <button onClick={() => {
+                const crm = eligible.filter(c => getSource(c) === 'crm');
+                setEnrollSelected(new Set(crm.slice(0, 50).map(c => c.id)));
+                setSourceFilter('crm');
+              }}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-blue-500/10 text-blue-300 border border-blue-500/20 hover:bg-blue-500/20 transition-all">
+                <Users className="w-3.5 h-3.5" />
+                Import from CRM ({sourceCounts['crm']})
+              </button>
+            )}
           </div>
+
+          {/* Source filter tabs + Search */}
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 p-0.5 bg-white/[0.03] rounded-lg border border-white/[0.06]">
+              {(['all', 'ai-engine', 'discovery', 'crm'] as const).map(src => (
+                <button key={src} onClick={() => setSourceFilter(src)}
+                  className={cn('px-2.5 py-1 rounded-md text-[11px] font-medium transition-all',
+                    sourceFilter === src ? 'bg-white/10 text-slate-200' : 'text-slate-500 hover:text-slate-300')}>
+                  {src === 'all' ? `All (${eligible.length})` :
+                   src === 'ai-engine' ? `AI Engine (${sourceCounts['ai-engine']})` :
+                   src === 'discovery' ? `Discovery (${sourceCounts['discovery']})` :
+                   `CRM (${sourceCounts['crm']})`}
+                </button>
+              ))}
+            </div>
+            <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/[0.03] border border-white/[0.06]">
+              <Search className="w-3.5 h-3.5 text-slate-500" />
+              <input value={enrollSearch} onChange={e => setEnrollSearch(e.target.value)}
+                placeholder="Search clinics..."
+                className="flex-1 bg-transparent text-sm text-slate-200 placeholder:text-slate-500 outline-none" />
+            </div>
+          </div>
+
+          {/* Clinic list */}
           <div className="max-h-[300px] overflow-y-auto rounded-lg border border-white/[0.06]">
             {filteredEnroll.slice(0, 50).map(c => {
               const email = getContactEmail(c)!;
               const dm = c.decisionMaker;
               const selected = enrollSelected.has(c.id);
+              const src = getSource(c);
+              const srcCfg = sourceConfig[src];
               return (
                 <div key={c.id} onClick={() => {
                   setEnrollSelected(prev => {
@@ -1837,7 +1931,12 @@ function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEm
                   <input type="checkbox" checked={selected} readOnly
                     className="w-3.5 h-3.5 rounded border-white/20 bg-white/5 text-novalyte-500 shrink-0" />
                   <div className="flex-1 min-w-0">
-                    <p className="text-xs text-slate-200 font-medium truncate">{c.clinic.name}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="text-xs text-slate-200 font-medium truncate">{c.clinic.name}</p>
+                      <span className={cn('text-[9px] px-1.5 py-0.5 rounded-full font-medium ring-1', srcCfg.bg, srcCfg.color, srcCfg.ring)}>
+                        {srcCfg.label}
+                      </span>
+                    </div>
                     <p className="text-[10px] text-slate-500">
                       {dm ? `${dm.firstName} ${dm.lastName} · ` : ''}{email} · {c.clinic.address.city}, {c.clinic.address.state}
                       {c.clinic.phone ? ` · ${c.clinic.phone}` : ' · No phone'}
@@ -1848,7 +1947,9 @@ function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEm
               );
             })}
             {filteredEnroll.length === 0 && (
-              <div className="p-6 text-center text-xs text-slate-500">No eligible clinics found</div>
+              <div className="p-6 text-center text-xs text-slate-500">
+                {eligible.length === 0 ? 'No eligible clinics. Push clinics from AI Engine or Clinic Discovery first.' : 'No matching clinics found'}
+              </div>
             )}
           </div>
           <div className="flex items-center justify-between">
@@ -1866,7 +1967,7 @@ function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEm
         <div className="glass-card p-12 text-center">
           <Zap className="w-10 h-10 text-slate-600 mx-auto mb-3" />
           <p className="text-slate-400">No clinics enrolled yet</p>
-          <p className="text-xs text-slate-500 mt-1">Click "Enroll Clinics" to start a 5-day multi-touch sequence</p>
+          <p className="text-xs text-slate-500 mt-1">Click "Import Prospects" to pull clinics from AI Engine, Discovery, or CRM into a 5-day sequence</p>
         </div>
       ) : (
         <div className="space-y-2">
@@ -1896,6 +1997,15 @@ function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEm
                     <div className="flex items-center gap-2">
                       <p className="text-sm text-slate-200 font-medium truncate">{contact.clinic.name}</p>
                       {dm && <span className="text-[10px] text-slate-500">{dm.firstName} {dm.lastName}</span>}
+                      {(() => {
+                        const src = getSource(contact);
+                        const srcCfg = sourceConfig[src];
+                        return (
+                          <span className={cn('text-[9px] px-1.5 py-0.5 rounded-full font-medium ring-1', srcCfg.bg, srcCfg.color, srcCfg.ring)}>
+                            {srcCfg.label}
+                          </span>
+                        );
+                      })()}
                     </div>
                     <p className="text-[10px] text-slate-500">{email} · {contact.clinic.address.city}, {contact.clinic.address.state}</p>
                   </div>
