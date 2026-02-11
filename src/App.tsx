@@ -21,14 +21,14 @@ import AIEngine from './components/AIEngine';
 
 const navItems = [
   { id: 'dashboard', label: 'Command Center', shortLabel: 'Home', icon: LayoutDashboard, badge: null },
-  { id: 'analytics', label: 'Ad Analytics', shortLabel: 'Ads', icon: BarChart3, badge: null },
-  { id: 'aiengine', label: 'AI Engine', shortLabel: 'AI', icon: Brain, badge: null },
+  { id: 'analytics', label: 'Ad Analytics', shortLabel: 'Ads', icon: BarChart3, badge: 'markets' },
+  { id: 'aiengine', label: 'AI Engine', shortLabel: 'AI', icon: Brain, badge: 'aiengine' },
   { id: 'clinics', label: 'Clinic Discovery', shortLabel: 'Clinics', icon: Building2, badge: 'clinics' },
   { id: 'email', label: 'Email Outreach', shortLabel: 'Email', icon: Mail, badge: 'emails' },
   { id: 'keywords', label: 'Keyword Scanner', shortLabel: 'Keywords', icon: TrendingUp, badge: 'trends' },
   { id: 'leads', label: 'Patient Leads', shortLabel: 'Leads', icon: UserCheck, badge: 'leads' },
   { id: 'crm', label: 'Pipeline CRM', shortLabel: 'CRM', icon: Users, badge: 'contacts' },
-  { id: 'forecast', label: 'Revenue Forecast', shortLabel: 'Revenue', icon: DollarSign, badge: null },
+  { id: 'forecast', label: 'Revenue Forecast', shortLabel: 'Revenue', icon: DollarSign, badge: 'forecast' },
   { id: 'voice', label: 'Voice Agent', shortLabel: 'Voice', icon: Phone, badge: 'calls' },
 ] as const;
 
@@ -157,7 +157,7 @@ function LoginScreen({ onAuth }: { onAuth: (session: SessionInfo) => void }) {
 function App() {
   const {
     currentView, setCurrentView, supabaseReady, isSyncing,
-    initSupabase, pushToSupabase, contacts, clinics, keywordTrends, callHistory, sentEmails,
+    initSupabase, pushToSupabase, contacts, clinics, keywordTrends, callHistory, sentEmails, markets,
   } = useAppStore();
 
   const [collapsed, setCollapsed] = useState(false);
@@ -202,6 +202,11 @@ function App() {
       case 'contacts': return contacts.length || null;
       case 'calls': return callHistory.length || null;
       case 'emails': return sentEmails.length || null;
+      case 'markets': return markets.length || null;
+      case 'forecast': return markets.length || null;
+      case 'aiengine': {
+        try { const raw = localStorage.getItem('novalyte_ai_engine_clinics'); return raw ? JSON.parse(raw).length || null : null; } catch { return null; }
+      }
       case 'leads': {
         try { const raw = localStorage.getItem('novalyte_ai_engine_clinics'); return raw ? JSON.parse(raw).length || null : null; } catch { return null; }
       }
