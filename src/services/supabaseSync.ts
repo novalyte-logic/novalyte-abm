@@ -44,7 +44,6 @@ function clinicToRow(c: Clinic) {
     rating: c.rating ?? null, review_count: c.reviewCount ?? null,
     manager_name: c.managerName || null, manager_email: c.managerEmail || null,
     owner_name: c.ownerName || null, owner_email: c.ownerEmail || null,
-    enriched_contacts: c.enrichedContacts || null,
     services: c.services || [],
     market_id: c.marketZone.id,
     discovered_at: iso(c.discoveredAt), last_updated: iso(c.lastUpdated),
@@ -79,7 +78,6 @@ function dmToRow(dm: DecisionMaker) {
     confidence: dm.confidence, enriched_at: iso(dm.enrichedAt),
     source: dm.source || null,
     email_verified: dm.emailVerified || false,
-    email_verification_status: dm.emailVerificationStatus || null,
   };
 }
 function rowToDm(r: any): DecisionMaker {
@@ -236,16 +234,7 @@ class SupabaseSyncService {
     for (let i = 0; i < rows.length; i += 100) {
       const chunk = rows.slice(i, i + 100);
       const { error } = await supabase.from('clinics').upsert(chunk, { onConflict: 'id' });
-      if (error) {
-        // If enriched_contacts column doesn't exist yet, retry without it
-        if (error.message?.includes('enriched_contacts')) {
-          const stripped = chunk.map(({ enriched_contacts, ...rest }) => rest);
-          const { error: e2 } = await supabase.from('clinics').upsert(stripped, { onConflict: 'id' });
-          if (e2) console.error('syncClinics error (stripped):', e2.message);
-        } else {
-          console.error('syncClinics error:', error.message);
-        }
-      }
+      if (error) console.error('syncClinics error:', error.message);
     }
   }
 

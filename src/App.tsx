@@ -20,15 +20,15 @@ import AIEngine from './components/AIEngine';
 
 const navItems = [
   { id: 'dashboard', label: 'Command Center', shortLabel: 'Home', icon: LayoutDashboard, badge: null },
-  { id: 'keywords', label: 'Keyword Scanner', shortLabel: 'Keywords', icon: TrendingUp, badge: 'trends' },
+  { id: 'analytics', label: 'Ad Analytics', shortLabel: 'Ads', icon: BarChart3, badge: null },
+  { id: 'aiengine', label: 'AI Engine', shortLabel: 'AI', icon: Brain, badge: null },
   { id: 'clinics', label: 'Clinic Discovery', shortLabel: 'Clinics', icon: Building2, badge: 'clinics' },
+  { id: 'email', label: 'Email Outreach', shortLabel: 'Email', icon: Mail, badge: 'emails' },
+  { id: 'keywords', label: 'Keyword Scanner', shortLabel: 'Keywords', icon: TrendingUp, badge: 'trends' },
   { id: 'leads', label: 'Patient Leads', shortLabel: 'Leads', icon: UserCheck, badge: null },
   { id: 'crm', label: 'Pipeline CRM', shortLabel: 'CRM', icon: Users, badge: 'contacts' },
-  { id: 'voice', label: 'Voice Agent', shortLabel: 'Voice', icon: Phone, badge: 'calls' },
-  { id: 'email', label: 'Email Outreach', shortLabel: 'Email', icon: Mail, badge: 'emails' },
-  { id: 'analytics', label: 'Ad Analytics', shortLabel: 'Ads', icon: BarChart3, badge: null },
   { id: 'forecast', label: 'Revenue Forecast', shortLabel: 'Revenue', icon: DollarSign, badge: null },
-  { id: 'aiengine', label: 'AI Engine', shortLabel: 'AI', icon: Brain, badge: null },
+  { id: 'voice', label: 'Voice Agent', shortLabel: 'Voice', icon: Phone, badge: 'calls' },
 ] as const;
 
 const ACCESS_CODE = '2104';

@@ -1,9 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { 
-  Brain, Database, Zap, TrendingUp, RefreshCw, CheckCircle, AlertCircle, Loader2, Download,
-  Activity, Sparkles, Target, BarChart3, Cpu, Network, Layers, GitBranch, Gauge,
-  ArrowRight, Play, Pause, Settings, Filter, Calendar, Clock, Users, Building2,
-  ChevronDown, ChevronUp, Eye, EyeOff, Maximize2, Minimize2, Info, Phone, Mail, X
+  Brain, Database, TrendingUp, CheckCircle, AlertCircle, Loader2, Download,
+  Activity, Target, Cpu, Network, Layers, Gauge,
+  ArrowRight, Play, Settings, Calendar, Clock,
+  ChevronUp, Eye, EyeOff, Phone, Mail, X
 } from 'lucide-react';
 import { cn } from '../utils/cn';
 import toast from 'react-hot-toast';
@@ -40,7 +40,7 @@ export default function AIEngine() {
   const [lastRun, setLastRun] = useState<Date | null>(null);
   const [topProspects, setTopProspects] = useState<any[]>([]);
   const [showConfig, setShowConfig] = useState(false);
-  const [showMetrics, setShowMetrics] = useState(true);
+  const [showMetrics] = useState(true);
   const [showDataFlow, setShowDataFlow] = useState(true);
   const [animateFlow, setAnimateFlow] = useState(false);
   const [config, setConfig] = useState<PipelineConfig>({
@@ -177,7 +177,7 @@ export default function AIEngine() {
   return (
     <div className="min-h-screen bg-black p-4 md:p-6 space-y-4">
       {/* Hero Header with Animated Background */}
-      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-purple-900/30 via-black to-novalyte-900/30 border border-purple-500/20 p-8">
+      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-novalyte-900/40 via-black to-novalyte-900/20 border border-novalyte-500/20 p-8">
         {/* Animated grid background */}
         <div className="absolute inset-0 opacity-20">
           <div className="absolute inset-0" style={{
@@ -187,16 +187,16 @@ export default function AIEngine() {
         </div>
         
         {/* Floating orbs */}
-        <div className="absolute top-10 right-20 w-32 h-32 bg-purple-500/20 rounded-full blur-3xl animate-pulse" />
-        <div className="absolute bottom-10 left-20 w-40 h-40 bg-novalyte-500/20 rounded-full blur-3xl animate-pulse" style={{ animationDelay: '1s' }} />
+        <div className="absolute top-10 right-20 w-32 h-32 bg-novalyte-500/20 rounded-full blur-3xl animate-pulse" />
+        <div className="absolute bottom-10 left-20 w-40 h-40 bg-novalyte-500/15 rounded-full blur-3xl animate-pulse" style={{ animationDelay: '1s' }} />
         
         <div className="relative z-10">
           <div className="flex items-start justify-between flex-wrap gap-4">
             <div>
               <div className="flex items-center gap-3 mb-2">
                 <div className="relative">
-                  <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-purple-500 to-novalyte-500 flex items-center justify-center shadow-2xl shadow-purple-500/50">
-                    <Brain className="w-7 h-7 text-white" />
+                  <div className="w-14 h-14 rounded-2xl bg-[#06B6D4] flex items-center justify-center shadow-2xl shadow-novalyte-500/50">
+                    <Brain className="w-7 h-7 text-[#000000]" />
                   </div>
                   {status.step !== 'idle' && status.step !== 'complete' && status.step !== 'error' && (
                     <div className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-400 rounded-full animate-ping" />
@@ -230,7 +230,7 @@ export default function AIEngine() {
                 className={cn(
                   'flex items-center gap-2.5 px-6 py-2.5 rounded-xl font-semibold text-sm transition-all shadow-lg',
                   status.step === 'idle' || status.step === 'complete' || status.step === 'error'
-                    ? 'bg-gradient-to-r from-purple-500 to-novalyte-500 text-white hover:shadow-purple-500/50 hover:scale-105'
+                    ? 'bg-[#06B6D4] text-[#000000] hover:bg-[#22D3EE] hover:scale-105'
                     : 'bg-white/5 text-slate-500 cursor-not-allowed'
                 )}
               >
@@ -250,7 +250,7 @@ export default function AIEngine() {
         <div className="glass-card p-6 animate-fade-in">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-semibold text-slate-200 flex items-center gap-2">
-              <Settings className="w-5 h-5 text-purple-400" />
+              <Settings className="w-5 h-5 text-novalyte-400" />
               Pipeline Configuration
             </h3>
             <button onClick={() => setShowConfig(false)} className="text-slate-500 hover:text-slate-300">
@@ -389,11 +389,11 @@ export default function AIEngine() {
               <div className={cn(
                 'flex-1 min-w-[200px] p-4 rounded-xl border-2 transition-all duration-500',
                 (status.step === 'syncing' || status.step === 'training') && animateFlow
-                  ? 'border-purple-500 bg-purple-500/10 shadow-lg shadow-purple-500/50'
+                  ? 'border-novalyte-500 bg-novalyte-500/10 shadow-lg shadow-novalyte-500/50'
                   : 'border-white/10 bg-white/5'
               )}>
                 <div className="flex items-center gap-3 mb-2">
-                  <Layers className={cn('w-6 h-6', (status.step === 'syncing' || status.step === 'training') && animateFlow ? 'text-purple-400 animate-pulse' : 'text-slate-400')} />
+                  <Layers className={cn('w-6 h-6', (status.step === 'syncing' || status.step === 'training') && animateFlow ? 'text-novalyte-400 animate-pulse' : 'text-slate-400')} />
                   <div>
                     <h4 className="text-sm font-semibold text-slate-200">BigQuery</h4>
                     <p className="text-xs text-slate-500">Data Warehouse</p>
@@ -401,13 +401,13 @@ export default function AIEngine() {
                 </div>
                 {status.syncDuration !== undefined && (
                   <div className="text-xs text-slate-500">
-                    Synced in <span className="text-purple-400 font-semibold">{status.syncDuration}s</span>
+                    Synced in <span className="text-novalyte-400 font-semibold">{status.syncDuration}s</span>
                   </div>
                 )}
               </div>
 
               {/* Arrow */}
-              <ArrowRight className={cn('w-6 h-6 shrink-0', animateFlow && status.step === 'training' ? 'text-purple-400 animate-pulse' : 'text-slate-600')} />
+              <ArrowRight className={cn('w-6 h-6 shrink-0', animateFlow && status.step === 'training' ? 'text-novalyte-400 animate-pulse' : 'text-slate-600')} />
 
               {/* Step 3: ML Model */}
               <div className={cn(
@@ -470,7 +470,7 @@ export default function AIEngine() {
 
         {/* Progress */}
         {status.step !== 'idle' && (
-          <div className="space-y-3">
+          <div className="glass-card p-6 space-y-3">
             <div className="flex items-center gap-3">
               {status.step === 'error' ? (
                 <AlertCircle className="w-5 h-5 text-red-400 shrink-0" />
@@ -483,7 +483,7 @@ export default function AIEngine() {
                 <p className={cn('text-sm font-medium', status.step === 'error' ? 'text-red-400' : 'text-slate-200')}>
                   {status.message}
                 </p>
-                {status.step !== 'error' && status.step !== 'idle' && (
+                {status.step !== 'error' && (
                   <div className="mt-2 h-1.5 bg-white/5 rounded-full overflow-hidden">
                     <div
                       className="h-full bg-novalyte-500 rounded-full transition-all duration-500"
@@ -531,7 +531,6 @@ export default function AIEngine() {
             )}
           </div>
         )}
-      </div>
 
       {/* Real-time Metrics Dashboard */}
       {showMetrics && status.step !== 'idle' && (
@@ -556,10 +555,10 @@ export default function AIEngine() {
           </div>
 
           <div className="glass-card p-4 relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-20 h-20 bg-purple-500/10 rounded-full blur-2xl" />
+            <div className="absolute top-0 right-0 w-20 h-20 bg-novalyte-500/10 rounded-full blur-2xl" />
             <div className="relative">
               <div className="flex items-center gap-2 mb-2">
-                <Clock className="w-4 h-4 text-purple-400" />
+                <Clock className="w-4 h-4 text-novalyte-400" />
                 <span className="text-xs text-slate-500">Processing Time</span>
               </div>
               <p className="text-2xl font-bold text-white">
@@ -617,10 +616,10 @@ export default function AIEngine() {
       {/* Top Prospects */}
       {topProspects.length > 0 && (
         <div className="glass-card overflow-hidden">
-          <div className="px-6 py-4 border-b border-white/[0.06] flex items-center justify-between bg-gradient-to-r from-red-500/5 to-amber-500/5">
+          <div className="px-6 py-4 border-b border-white/[0.06] flex items-center justify-between bg-novalyte-500/5">
             <div>
               <h2 className="text-lg font-semibold text-slate-200 flex items-center gap-2">
-                <TrendingUp className="w-5 h-5 text-red-400" />
+                <TrendingUp className="w-5 h-5 text-novalyte-400" />
                 Top Prospects
                 <span className="text-xs text-slate-500 font-normal ml-2">Highest propensity to convert</span>
               </h2>
@@ -628,7 +627,7 @@ export default function AIEngine() {
             </div>
             <button
               onClick={exportProspects}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-red-500/20 to-amber-500/20 text-red-300 text-sm font-medium hover:from-red-500/30 hover:to-amber-500/30 transition-all border border-red-500/20"
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#06B6D4] text-[#000000] text-sm font-semibold hover:bg-[#22D3EE] transition-all"
             >
               <Download className="w-4 h-4" /> Export CSV
             </button>
@@ -654,7 +653,7 @@ export default function AIEngine() {
                     <td className="py-3 px-4">
                       <div className={cn(
                         'w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold',
-                        i < 3 ? 'bg-gradient-to-br from-red-500 to-amber-500 text-white shadow-lg' :
+                        i < 3 ? 'bg-[#06B6D4] text-[#000000] shadow-lg shadow-novalyte-500/30' :
                         i < 10 ? 'bg-amber-500/20 text-amber-400' :
                         'bg-white/5 text-slate-500'
                       )}>
@@ -690,7 +689,7 @@ export default function AIEngine() {
                             style={{ width: `${p.propensity_score * 100}%` }}
                           />
                         </div>
-                        <span className="text-emerald-400 font-bold text-sm tabular-nums min-w-[45px]">
+                        <span className="text-novalyte-400 font-bold text-sm tabular-nums min-w-[45px]">
                           {(p.propensity_score * 100).toFixed(0)}%
                         </span>
                       </div>
@@ -777,7 +776,7 @@ export default function AIEngine() {
           </div>
         </div>
 
-        <div className="glass-card p-5 relative overflow-hidden group hover:border-emerald-500/30 transition-all">
+        <div className="glass-card p-5 relative overflow-hidden group hover:border-novalyte-500/30 transition-all">
           <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/5 rounded-full blur-2xl group-hover:bg-emerald-500/10 transition-all" />
           <div className="relative">
             <div className="flex items-center gap-3 mb-3">
@@ -792,7 +791,7 @@ export default function AIEngine() {
           </div>
         </div>
 
-        <div className="glass-card p-5 relative overflow-hidden group hover:border-amber-500/30 transition-all">
+        <div className="glass-card p-5 relative overflow-hidden group hover:border-novalyte-500/30 transition-all">
           <div className="absolute top-0 right-0 w-24 h-24 bg-amber-500/5 rounded-full blur-2xl group-hover:bg-amber-500/10 transition-all" />
           <div className="relative">
             <div className="flex items-center gap-3 mb-3">
