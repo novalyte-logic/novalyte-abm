@@ -58,6 +58,14 @@ interface AppState {
   addSentEmails: (emails: SentEmail[]) => void;
   updateSentEmails: (emails: SentEmail[]) => void;
   setCurrentView: (view: AppState['currentView']) => void;
+  // Clear actions
+  clearClinics: () => void;
+  clearContacts: () => void;
+  clearKeywordTrends: () => void;
+  clearCallHistory: () => void;
+  clearSentEmails: () => void;
+  clearCampaigns: () => void;
+  factoryReset: () => void;
   // Supabase actions
   initSupabase: () => Promise<void>;
   pushToSupabase: () => Promise<void>;
@@ -297,6 +305,51 @@ const createPersistedStore = (persist as any)((set: any, get: any) => ({
   },
 
   setCurrentView: (view: any) => set({ currentView: view }),
+
+  // ─── Clear actions ───
+  clearClinics: () => {
+    set({ clinics: [] });
+    localStorage.removeItem('novalyte_ai_engine_clinics');
+    localStorage.removeItem('novalyte_ai_engine_state');
+    bgSync(() => supabaseSync.deleteAllClinics());
+  },
+  clearContacts: () => {
+    set({ contacts: [], selectedContact: null });
+    localStorage.removeItem('novalyte_crm_imports');
+    bgSync(() => supabaseSync.deleteAllContacts());
+  },
+  clearKeywordTrends: () => {
+    set({ keywordTrends: [] });
+    bgSync(() => supabaseSync.deleteAllKeywordTrends());
+  },
+  clearCallHistory: () => {
+    set({ callHistory: [], activeCalls: [] });
+    bgSync(() => supabaseSync.deleteAllCalls());
+  },
+  clearSentEmails: () => set({ sentEmails: [] }),
+  clearCampaigns: () => {
+    set({ campaigns: [], activeCampaign: null });
+    bgSync(() => supabaseSync.deleteAllCampaigns());
+  },
+
+  /** Nuclear reset — wipes ALL data from store + all localStorage keys + Supabase */
+  factoryReset: () => {
+    // Clear Supabase first (fire and forget)
+    supabaseSync.deleteAll().catch(err => console.warn('Supabase delete error:', err));
+    // Clear all feature-specific localStorage
+    const keys = [
+      'novalyte-store',
+      'novalyte_ai_engine_clinics',
+      'novalyte_ai_engine_state',
+      'novalyte_crm_imports',
+      'novalyte_patient_leads_count',
+      'novalyte_cleared_lead_ids',
+      'novalyte_drip_sequences',
+    ];
+    keys.forEach(k => localStorage.removeItem(k));
+    // Small delay to let Supabase delete fire off
+    setTimeout(() => window.location.reload(), 500);
+  },
 
   // ─── Supabase lifecycle ───
 

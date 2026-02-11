@@ -4,7 +4,7 @@ import {
   Phone, Mail, MapPin, Clock, Star, Zap, Send, ExternalLink,
   CheckCircle2, XCircle, UserCheck, Building2, Loader2,
   FileText, Globe, ClipboardList, Smartphone, Tablet, Monitor,
-  PhoneCall, MessageSquare,
+  PhoneCall, MessageSquare, Trash2,
 } from 'lucide-react';
 import { cn } from '../utils/cn';
 import {
@@ -15,6 +15,7 @@ import {
 } from '../services/patientLeadService';
 import { sendReferralEmail } from '../services/leadReferralService';
 import { VoiceAgentService } from '../services/voiceAgentService';
+import toast from 'react-hot-toast';
 
 // ─── Status Config ───
 
@@ -262,12 +263,12 @@ function LeadCard({ lead, expanded, onToggle, onStatusChange, onRefresh, scoreCo
         body: JSON.stringify({
           from: 'Novalyte <onboarding@resend.dev>',
           to: lead.email,
-          subject: `${lead.name}, Your Clinic Match is Ready — Novalyte™ AI`,
+          subject: `${lead.name}, Your Clinic Match is Ready — Novalyte AI`,
           html: `<div style="font-family:sans-serif;background:#0A0B0D;color:#E5E7EB;padding:32px;border-radius:12px;max-width:480px;margin:0 auto;">
             <h2 style="color:white;margin:0 0 16px;">Hi ${lead.name},</h2>
             <p style="line-height:1.6;margin:0 0 16px;">Your matched clinic is ready to connect with you. A specialist will be reaching out within 24 hours to discuss your personalized treatment plan.</p>
             <p style="line-height:1.6;margin:0 0 16px;">If you'd like to get started sooner, reply to this email or call us directly.</p>
-            <p style="color:#06B6D4;font-weight:600;margin:0;">— Novalyte™ AI Team</p>
+            <p style="color:#06B6D4;font-weight:600;margin:0;">— Novalyte AI Team</p>
           </div>`
         })
       });
@@ -484,13 +485,30 @@ export default function PatientLeads() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
 
+  // Persist cleared lead IDs so they don't reappear on refresh
+  const [clearedIds, setClearedIds] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem('novalyte_cleared_lead_ids');
+      return raw ? new Set(JSON.parse(raw)) : new Set();
+    } catch { return new Set(); }
+  });
+
+  const persistClearedIds = useCallback((ids: Set<string>) => {
+    setClearedIds(ids);
+    localStorage.setItem('novalyte_cleared_lead_ids', JSON.stringify([...ids]));
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     const [leadsData, statsData] = await Promise.all([fetchLeads(), getLeadStats()]);
-    setLeads(leadsData);
+    // Filter out previously cleared leads
+    const visibleLeads = leadsData.filter(l => !clearedIds.has(l.id));
+    setLeads(visibleLeads);
     setStats(statsData);
+    // Update badge count in localStorage for App.tsx sidebar
+    localStorage.setItem('novalyte_patient_leads_count', String(visibleLeads.length));
     setLoading(false);
-  }, []);
+  }, [clearedIds]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -522,11 +540,37 @@ export default function PatientLeads() {
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">Real-time qualified leads from ads.novalyte.io — click to view full assessment</p>
         </div>
-        <button onClick={load} disabled={loading}
-          className="btn btn-secondary gap-2 text-xs self-start">
-          <RefreshCw className={cn('w-3.5 h-3.5', loading && 'animate-spin')} />
-          {loading ? 'Loading...' : 'Refresh'}
-        </button>
+        <div className="flex items-center gap-2">
+          {clearedIds.size > 0 && (
+            <button onClick={() => {
+              persistClearedIds(new Set());
+              load();
+              toast.success('Cleared leads restored');
+            }}
+              className="btn bg-white/5 text-slate-400 border border-white/10 hover:bg-white/10 gap-2 text-xs self-start">
+              <RefreshCw className="w-3.5 h-3.5" /> Restore {clearedIds.size} Cleared
+            </button>
+          )}
+          <button onClick={() => {
+            if (confirm(`Clear all ${leads.length} patient leads from view?`)) {
+              // Persist cleared IDs so they don't come back on refresh
+              const allIds = new Set([...clearedIds, ...leads.map(l => l.id)]);
+              persistClearedIds(allIds);
+              setLeads([]);
+              setStats(null);
+              localStorage.setItem('novalyte_patient_leads_count', '0');
+              toast.success('Patient leads cleared');
+            }
+          }} disabled={leads.length === 0}
+            className="btn bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 gap-2 text-xs self-start disabled:opacity-50">
+            <Trash2 className="w-3.5 h-3.5" /> Clear All
+          </button>
+          <button onClick={load} disabled={loading}
+            className="btn btn-secondary gap-2 text-xs self-start">
+            <RefreshCw className={cn('w-3.5 h-3.5', loading && 'animate-spin')} />
+            {loading ? 'Loading...' : 'Refresh'}
+          </button>
+        </div>
       </div>
 
       {/* Stats Cards */}

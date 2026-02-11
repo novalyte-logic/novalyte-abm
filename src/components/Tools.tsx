@@ -24,20 +24,10 @@ export default function Tools() {
   };
 
   const handleClear = () => {
-    // Confirm
     // eslint-disable-next-line no-restricted-globals
-    const ok = confirm('Clear persisted state? This will remove local data and reload the app.');
+    const ok = confirm('⚠️ Factory Reset: This will clear ALL data across every tab and reload the app. Continue?');
     if (!ok) return;
-
-    try {
-      localStorage.removeItem('novalyte-store');
-      // reload so the app initializes from defaults
-      window.location.reload();
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to clear persisted state', err);
-      alert('Failed to clear state. See console for details.');
-    }
+    useAppStore.getState().factoryReset();
   };
 
   return (

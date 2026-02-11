@@ -188,10 +188,11 @@ Consider: local demographics, affluence level (${market.affluenceScore}/10), men
   /**
    * Get trending keywords for a specific market, sorted by trend score
    */
-  async getTrendingKeywordsForMarket(market: MarketZone): Promise<KeywordTrend[]> {
+  async getTrendingKeywordsForMarket(market: MarketZone, keywords?: string[]): Promise<KeywordTrend[]> {
     const trends: KeywordTrend[] = [];
+    const keywordsToScan = keywords && keywords.length > 0 ? keywords : MEN_HEALTH_KEYWORDS as unknown as string[];
 
-    for (const keyword of MEN_HEALTH_KEYWORDS) {
+    for (const keyword of keywordsToScan) {
       const trend = await this.scanKeywordTrend(keyword, market);
       if (trend) trends.push(trend);
       await this.delay(100);

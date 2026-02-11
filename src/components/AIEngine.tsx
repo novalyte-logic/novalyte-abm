@@ -386,10 +386,34 @@ export default function AIEngine() {
       const imported: any[] = JSON.parse(raw);
       if (imported.length === 0) { toast.error('No clinics in the import queue'); return; }
 
-      // Merge with existing topProspects — dedup by clinic_id
+      // Merge with existing topProspects — dedup by clinic_id AND name+city
       const existingIds = new Set(topProspects.map(p => p.clinic_id));
-      const newOnes = imported.filter(p => !existingIds.has(p.clinic_id));
-      if (newOnes.length === 0) { toast('All clinics already imported'); return; }
+      const existingKeys = new Set(topProspects.map(p => `${(p.name || '').toLowerCase().trim()}|${(p.city || '').toLowerCase().trim()}`));
+      let dupCount = 0;
+      const newOnes = imported.filter(p => {
+        const key = `${(p.name || '').toLowerCase().trim()}|${(p.city || '').toLowerCase().trim()}`;
+        if (existingIds.has(p.clinic_id) || existingKeys.has(key)) { dupCount++; return false; }
+        return true;
+      });
+
+      if (dupCount > 0 && newOnes.length === 0) {
+        toast((t) => (
+          <div>
+            <p className="font-semibold">All {dupCount} clinics are duplicates</p>
+            <p className="text-sm text-slate-400 mt-1">Already in AI Engine results</p>
+          </div>
+        ), { icon: '⚠️', duration: 4000 });
+        return;
+      }
+
+      if (dupCount > 0) {
+        toast((t) => (
+          <div>
+            <p className="font-semibold">{dupCount} duplicate{dupCount > 1 ? 's' : ''} skipped</p>
+            <p className="text-sm text-slate-400 mt-1">{newOnes.length} new clinics imported</p>
+          </div>
+        ), { icon: '⚠️', duration: 4000 });
+      }
 
       const merged = [...topProspects, ...newOnes];
       setTopProspects(merged);
@@ -404,8 +428,64 @@ export default function AIEngine() {
         enriched: merged.filter(p => p.email || p.dm_email).length,
       }));
 
-      toast.success(`Imported ${newOnes.length} clinics from Clinic Discovery (${merged.length} total)`);
+      if (newOnes.length > 0 && dupCount === 0) {
+        toast.success(`Imported ${newOnes.length} clinics from Clinic Discovery (${merged.length} total)`);
+      }
     } catch { toast.error('Failed to import clinics'); }
+  };
+
+  // ─── Detect & remove duplicates ───
+  const detectDuplicates = (): number => {
+    const seen = new Map<string, number>();
+    let dupCount = 0;
+    for (const p of topProspects) {
+      const key = `${(p.name || '').toLowerCase().trim()}|${(p.city || '').toLowerCase().trim()}`;
+      seen.set(key, (seen.get(key) || 0) + 1);
+    }
+    for (const count of seen.values()) {
+      if (count > 1) dupCount += count - 1;
+    }
+    return dupCount;
+  };
+
+  const removeDuplicates = () => {
+    const seen = new Set<string>();
+    const deduped: any[] = [];
+    for (const p of topProspects) {
+      const key = `${(p.name || '').toLowerCase().trim()}|${(p.city || '').toLowerCase().trim()}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduped.push(p);
+      }
+    }
+    const removed = topProspects.length - deduped.length;
+    if (removed === 0) { toast.success('No duplicates found'); return; }
+    setTopProspects(deduped);
+    setLiveNumbers(prev => ({
+      ...prev,
+      clinics: deduped.length,
+      hot: deduped.filter(p => p.propensity_tier === 'hot').length,
+      warm: deduped.filter(p => p.propensity_tier === 'warm').length,
+      cold: deduped.filter(p => p.propensity_tier === 'cold').length,
+      enriched: deduped.filter(p => p.email || p.dm_email).length,
+    }));
+    setSelectedClinics(new Set());
+    toast.success(`Removed ${removed} duplicate${removed > 1 ? 's' : ''} — ${deduped.length} clinics remaining`);
+  };
+
+  // ─── Clear all results ───
+  const clearAllResults = () => {
+    setTopProspects([]);
+    setLiveNumbers({ clinics: 0, leads: 0, accuracy: 0, hot: 0, warm: 0, cold: 0, enriched: 0 });
+    setSelectedClinics(new Set());
+    setStatus({ step: 'idle', message: 'Ready to run intelligence pipeline', progress: 0 });
+    setPumpScore(0);
+    setLastRun(null);
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem('novalyte_ai_engine_clinics');
+    localStorage.removeItem('novalyte_drip_sequences');
+    setDripSequences([]);
+    toast.success('All AI Engine data cleared');
   };
 
   const discoveryClinicCount = (() => {
@@ -782,9 +862,19 @@ export default function AIEngine() {
 
     if (newContacts.length > 0) {
       addContacts(newContacts);
-      toast.success(`${newContacts.length} clinics added to Pipeline CRM`);
+      const skipped = selected.length - newContacts.length;
+      if (skipped > 0) {
+        toast((t) => (
+          <div>
+            <p className="font-semibold">{newContacts.length} added to CRM</p>
+            <p className="text-sm text-slate-400 mt-1">{skipped} duplicate{skipped > 1 ? 's' : ''} already in CRM — skipped</p>
+          </div>
+        ), { icon: '⚠️', duration: 4000 });
+      } else {
+        toast.success(`${newContacts.length} clinics added to Pipeline CRM`);
+      }
     } else {
-      toast('All selected clinics are already in CRM');
+      toast('All selected clinics are already in CRM', { icon: '⚠️' });
     }
     setSelectedClinics(new Set());
     setPushingToCRM(false);
@@ -828,6 +918,26 @@ export default function AIEngine() {
 
   const exportProspects = () => {
     if (!filteredProspects.length) { toast.error('No prospects to export.'); return; }
+    // Check for duplicates before export
+    const seen = new Set<string>();
+    let dupCount = 0;
+    for (const p of filteredProspects) {
+      const key = `${(p.name || '').toLowerCase().trim()}|${(p.city || '').toLowerCase().trim()}`;
+      if (seen.has(key)) dupCount++;
+      else seen.add(key);
+    }
+    if (dupCount > 0) {
+      toast((t) => (
+        <div>
+          <p className="font-semibold">{dupCount} duplicate{dupCount > 1 ? 's' : ''} detected in export</p>
+          <p className="text-sm text-slate-400 mt-1">Use "Remove Duplicates" to clean up first</p>
+          <button onClick={() => { removeDuplicates(); toast.dismiss(t.id); }}
+            className="mt-2 px-3 py-1 rounded bg-amber-500/20 text-amber-400 text-xs font-semibold hover:bg-amber-500/30">
+            Remove Duplicates Now
+          </button>
+        </div>
+      ), { icon: '⚠️', duration: 6000 });
+    }
     const csv = ['name,city,state,phone,email,lead_score,tier,affluence,services,is_duplicate',
       ...filteredProspects.map(p => [p.name, p.city, p.state, p.phone || '', p.email || '', p.propensity_score, p.propensity_tier, p.affluence_score, (p.services || []).join('; '), p.is_duplicate ? 'YES' : ''].map(v => String(v).includes(',') ? `"${v}"` : v).join(','))
     ].join('\n');
@@ -877,10 +987,24 @@ export default function AIEngine() {
             </div>
             {lastRun && <div className="flex items-center gap-2 text-xs text-slate-500 mt-3"><Clock className="w-3.5 h-3.5" /> Last run: {lastRun.toLocaleString()}</div>}
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <button onClick={() => setShowConfig(!showConfig)} className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-sm font-medium transition-all">
               <Settings className="w-4 h-4" /> Configure
             </button>
+            {topProspects.length > 0 && (
+              <>
+                {detectDuplicates() > 0 && (
+                  <button onClick={removeDuplicates}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-400 text-sm font-medium transition-all">
+                    <Copy className="w-4 h-4" /> Remove {detectDuplicates()} Duplicate{detectDuplicates() > 1 ? 's' : ''}
+                  </button>
+                )}
+                <button onClick={clearAllResults}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 text-sm font-medium transition-all">
+                  <X className="w-4 h-4" /> Clear All
+                </button>
+              </>
+            )}
             {discoveryClinicCount > 0 && (
               <button onClick={importFromDiscovery}
                 className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 text-sm font-medium transition-all">

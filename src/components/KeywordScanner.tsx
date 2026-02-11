@@ -16,6 +16,9 @@ import {
   Zap,
   BarChart3,
   Target,
+  FileText,
+  Copy,
+  Loader2,
 } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
 import { keywordService } from '../services/keywordService';
@@ -37,6 +40,8 @@ function KeywordScanner() {
   } = useAppStore();
 
   const [selectedKeyword, setSelectedKeyword] = useState<string | null>(null);
+  const [selectedKeywords, setSelectedKeywords] = useState<Set<string>>(new Set());
+  const [selectedMarkets, setSelectedMarkets] = useState<Set<string>>(new Set());
   const [selectedTrend, setSelectedTrend] = useState<KeywordTrend | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>('trendScore');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
@@ -45,13 +50,23 @@ function KeywordScanner() {
   // ─── Scan handlers ───
 
   const handleScanMarket = async () => {
-    if (!selectedMarket) { toast.error('Select a market first'); return; }
+    if (!selectedMarket && selectedMarkets.size === 0) { toast.error('Select a market first'); return; }
     setIsScanning(true);
-    toast.loading('Scanning keyword trends...', { id: 'scanning' });
+    const marketsToScan = selectedMarkets.size > 0
+      ? markets.filter(m => selectedMarkets.has(m.id))
+      : selectedMarket ? [selectedMarket] : [];
+    const keywordsToScan = selectedKeywords.size > 0
+      ? Array.from(selectedKeywords)
+      : undefined;
+    toast.loading(`Scanning ${marketsToScan.length} market${marketsToScan.length !== 1 ? 's' : ''}...`, { id: 'scanning' });
     try {
-      const trends = await keywordService.getTrendingKeywordsForMarket(selectedMarket);
-      addKeywordTrends(trends);
-      toast.success(`Found ${trends.length} keyword trends`, { id: 'scanning' });
+      let allTrends: KeywordTrend[] = [];
+      for (const market of marketsToScan) {
+        const trends = await keywordService.getTrendingKeywordsForMarket(market, keywordsToScan);
+        allTrends = [...allTrends, ...trends];
+      }
+      addKeywordTrends(allTrends);
+      toast.success(`Found ${allTrends.length} keyword trends across ${marketsToScan.length} market${marketsToScan.length !== 1 ? 's' : ''}`, { id: 'scanning' });
     } catch { toast.error('Failed to scan keywords', { id: 'scanning' }); }
     finally { setIsScanning(false); }
   };
@@ -99,6 +114,111 @@ function KeywordScanner() {
     toast.success('Trend removed');
   };
 
+  /* ─── Blog Post Generator ─── */
+  const [generatingBlog, setGeneratingBlog] = useState(false);
+  const [generatedBlog, setGeneratedBlog] = useState<{ title: string; slug: string; content: string; keyword: string; market: string } | null>(null);
+
+  const handleGenerateBlogPost = async (trend: KeywordTrend) => {
+    setGeneratingBlog(true);
+    toast.loading(`Generating blog post for "${trend.keyword}" in ${trend.location.city}...`, { id: 'blog-gen' });
+    try {
+      const keyword = trend.keyword;
+      const city = trend.location.city;
+      const state = trend.location.state;
+      const volume = trend.searchVolume;
+      const growth = trend.growthRate;
+
+      const prompt = `Write a comprehensive, SEO-optimized blog article for a men's health platform called Novalyte AI.
+
+TARGET KEYWORD: "${keyword}"
+TARGET MARKET: ${city}, ${state}
+SEARCH VOLUME: ${volume}/mo (growing ${growth}%)
+
+REQUIREMENTS:
+- Title must include the keyword and city name for local SEO
+- 800-1200 words, informative and authoritative
+- Include H2 and H3 subheadings with keyword variations
+- Write for men aged 30-55 searching for this treatment
+- Include practical advice, what to expect, costs, and how to find a provider
+- End with a CTA to take a free AI health assessment
+- Tone: knowledgeable, direct, no fluff — like talking to a smart friend
+- Do NOT include medical disclaimers inline (we add those separately)
+- Output as HTML with <h2>, <h3>, <p>, <ul>, <li> tags only
+
+Also provide:
+- SEO title (60 chars max)
+- Meta description (155 chars max)
+- URL slug (lowercase, hyphens)
+
+Format your response as:
+TITLE: [seo title]
+SLUG: [url-slug]
+DESCRIPTION: [meta description]
+---
+[html content]`;
+
+      // Use Bedrock/Claude via the AI service
+      const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.7, maxOutputTokens: 4096 },
+        }),
+      });
+
+      // Fallback: generate locally if API fails
+      let title = `${keyword} in ${city}, ${state}: What Men Need to Know in 2026`;
+      let slug = `${keyword.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${city.toLowerCase()}-${state.toLowerCase()}`;
+      let content = '';
+
+      if (response.ok) {
+        const data = await response.json();
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        const parts = text.split('---');
+        const meta = parts[0] || '';
+        content = (parts.slice(1).join('---') || '').trim();
+
+        const titleMatch = meta.match(/TITLE:\s*(.+)/i);
+        const slugMatch = meta.match(/SLUG:\s*(.+)/i);
+        if (titleMatch) title = titleMatch[1].trim();
+        if (slugMatch) slug = slugMatch[1].trim();
+      }
+
+      if (!content) {
+        // Generate a solid fallback
+        content = `<h2>${keyword} in ${city}: Growing Demand</h2>
+<p>Search interest for "${keyword}" in ${city}, ${state} has grown ${growth}% recently, with ${volume.toLocaleString()} monthly searches. Men in the ${city} metro area are increasingly seeking treatment options, and the demand shows no signs of slowing.</p>
+<h2>What to Look For in a Provider</h2>
+<p>When searching for ${keyword.toLowerCase()} services in ${city}, prioritize clinics with board-certified physicians, comprehensive lab work, and individualized treatment protocols. Avoid providers who offer one-size-fits-all approaches.</p>
+<h2>Take the First Step</h2>
+<p>If you're in the ${city} area and considering treatment, a free AI health assessment can help determine if you're a candidate and match you with qualified providers near you.</p>`;
+      }
+
+      setGeneratedBlog({ title, slug, content, keyword, market: `${city}, ${state}` });
+      toast.success('Blog post generated — copy and deploy to intel-landing', { id: 'blog-gen' });
+    } catch (err: any) {
+      console.error('Blog generation failed:', err);
+      toast.error('Blog generation failed', { id: 'blog-gen' });
+    } finally {
+      setGeneratingBlog(false);
+    }
+  };
+
+  const handleCopyBlogPost = () => {
+    if (!generatedBlog) return;
+    const postData = JSON.stringify({
+      slug: generatedBlog.slug,
+      title: generatedBlog.title,
+      keyword: generatedBlog.keyword,
+      market: generatedBlog.market,
+      content: generatedBlog.content,
+      date: new Date().toISOString().slice(0, 10),
+    }, null, 2);
+    navigator.clipboard.writeText(postData);
+    toast.success('Blog post JSON copied to clipboard');
+  };
+
   // ─── Sorting ───
 
   const toggleSort = (key: SortKey) => {
@@ -118,7 +238,8 @@ function KeywordScanner() {
   const filteredTrends = useMemo(() => {
     let list = keywordTrends.filter(trend => {
       if (selectedMarket && trend.location.id !== selectedMarket.id) return false;
-      if (selectedKeyword && trend.keyword !== selectedKeyword) return false;
+      if (selectedKeywords.size > 0 && !selectedKeywords.has(trend.keyword)) return false;
+      if (selectedKeyword && selectedKeywords.size === 0 && trend.keyword !== selectedKeyword) return false;
       return true;
     });
 
@@ -137,7 +258,7 @@ function KeywordScanner() {
     });
 
     return list;
-  }, [keywordTrends, selectedMarket, selectedKeyword, sortKey, sortDir]);
+  }, [keywordTrends, selectedMarket, selectedKeyword, selectedKeywords, sortKey, sortDir]);
 
   // ─── Summary stats ───
 
@@ -175,7 +296,8 @@ function KeywordScanner() {
           <div className="flex-1 min-w-[200px]">
             <label className="block text-sm font-medium text-slate-400 mb-1">
               <MapPin className="w-4 h-4 inline mr-1" />
-              Select Market
+              Select Markets
+              {selectedMarkets.size > 0 && <span className="text-[10px] text-[#06B6D4] ml-1">({selectedMarkets.size} selected)</span>}
             </label>
             <select
               value={selectedMarket?.id || ''}
@@ -187,6 +309,28 @@ function KeywordScanner() {
                 <option key={m.id} value={m.id}>{m.city}, {m.state} (Score: {m.affluenceScore})</option>
               ))}
             </select>
+            {/* Multi-select market pills */}
+            <div className="flex flex-wrap gap-1 mt-2 max-h-[80px] overflow-y-auto">
+              {markets.map(m => {
+                const isSelected = selectedMarkets.has(m.id);
+                return (
+                  <button key={m.id} onClick={() => {
+                    setSelectedMarkets(prev => {
+                      const s = new Set(prev);
+                      s.has(m.id) ? s.delete(m.id) : s.add(m.id);
+                      return s;
+                    });
+                  }}
+                    className={cn('px-2 py-0.5 rounded-full text-[10px] font-medium transition-all border',
+                      isSelected ? 'bg-[#06B6D4]/15 text-[#06B6D4] border-[#06B6D4]/30' : 'bg-white/[0.03] text-slate-500 border-white/[0.06] hover:text-slate-300')}>
+                    {m.city}, {m.state}
+                  </button>
+                );
+              })}
+            </div>
+            {selectedMarkets.size > 0 && (
+              <button onClick={() => setSelectedMarkets(new Set())} className="text-[10px] text-red-400 hover:text-red-300 mt-1">Clear market selection</button>
+            )}
           </div>
 
           <div className="flex-1 min-w-[200px]">
@@ -207,14 +351,27 @@ function KeywordScanner() {
           </div>
 
           <div className="flex gap-2 pt-6">
-            <button onClick={handleScanMarket} disabled={isScanning || !selectedMarket} className="btn btn-primary">
+            <button onClick={handleScanMarket} disabled={isScanning || (!selectedMarket && selectedMarkets.size === 0)} className="btn btn-primary">
               {isScanning ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <Search className="w-4 h-4 mr-2" />}
-              Scan Market
+              Scan {selectedMarkets.size > 1 ? `${selectedMarkets.size} Markets` : 'Market'}
             </button>
             <button onClick={handleScanAllMarkets} disabled={isScanning} className="btn btn-secondary">
               <Radar className="w-4 h-4 mr-2" />
-              Scan All
+              Scan All ({markets.length})
             </button>
+            {keywordTrends.length > 0 && (
+              <button onClick={() => {
+                if (confirm(`Clear all ${keywordTrends.length} keyword trends? This lets you scan fresh without mixing old data.`)) {
+                  useAppStore.getState().clearKeywordTrends();
+                  setSelectedKeyword(null);
+                  setSelectedKeywords(new Set());
+                  setSelectedTrend(null);
+                  toast.success('All keyword trends cleared');
+                }
+              }} className="btn bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20">
+                <Trash2 className="w-4 h-4 mr-2" /> Clear All ({keywordTrends.length})
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -244,21 +401,38 @@ function KeywordScanner() {
         </div>
       )}
 
-      {/* Keyword pills */}
+      {/* Keyword pills — multi-select */}
       <div className="mb-6">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-xs text-slate-500">Select keywords to scan:</span>
+          {selectedKeywords.size > 0 && (
+            <button onClick={() => setSelectedKeywords(new Set())} className="text-[10px] text-red-400 hover:text-red-300">Clear ({selectedKeywords.size})</button>
+          )}
+          <button onClick={() => setSelectedKeywords(new Set(MEN_HEALTH_KEYWORDS))} className="text-[10px] text-[#06B6D4] hover:text-[#22D3EE]">Select All</button>
+        </div>
         <div className="flex flex-wrap gap-2">
-          {MEN_HEALTH_KEYWORDS.map((kw) => (
-            <button
-              key={kw}
-              onClick={() => setSelectedKeyword(selectedKeyword === kw ? null : kw)}
-              className={cn(
-                'px-3 py-1.5 rounded-full text-sm font-medium transition-colors',
-                selectedKeyword === kw ? 'bg-novalyte-500/20 text-novalyte-300 border border-novalyte-500/30' : 'bg-white/5 text-slate-400 border border-white/[0.06] hover:border-novalyte-500/30'
-              )}
-            >
-              {kw}
-            </button>
-          ))}
+          {MEN_HEALTH_KEYWORDS.map((kw) => {
+            const isSelected = selectedKeywords.has(kw);
+            return (
+              <button
+                key={kw}
+                onClick={() => {
+                  setSelectedKeywords(prev => {
+                    const s = new Set(prev);
+                    s.has(kw) ? s.delete(kw) : s.add(kw);
+                    return s;
+                  });
+                  setSelectedKeyword(null);
+                }}
+                className={cn(
+                  'px-3 py-1.5 rounded-full text-sm font-medium transition-colors',
+                  isSelected ? 'bg-[#06B6D4]/20 text-[#06B6D4] border border-[#06B6D4]/30' : 'bg-white/5 text-slate-400 border border-white/[0.06] hover:border-[#06B6D4]/30'
+                )}
+              >
+                {kw}
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -351,6 +525,14 @@ function KeywordScanner() {
                           title="Discover clinics in this market"
                         >
                           {isDiscoveringFromTrend ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Radar className="w-4 h-4" />}
+                        </button>
+                        <button
+                          onClick={() => handleGenerateBlogPost(trend)}
+                          disabled={generatingBlog}
+                          className="p-1.5 rounded hover:bg-white/5 text-slate-500 hover:text-purple-400"
+                          title="Generate blog post for this keyword"
+                        >
+                          {generatingBlog ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
                         </button>
                         <button
                           onClick={() => handleDeleteTrend(trend.id)}
@@ -482,11 +664,60 @@ function KeywordScanner() {
                 <Target className="w-4 h-4 mr-1" /> Go to CRM
               </button>
             </div>
+            <button
+              onClick={() => handleGenerateBlogPost(selectedTrend)}
+              disabled={generatingBlog}
+              className="btn w-full text-sm text-purple-400 hover:bg-purple-500/10 border border-purple-500/20"
+            >
+              {generatingBlog ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <FileText className="w-4 h-4 mr-1" />}
+              Generate Blog Post for "{selectedTrend.keyword}"
+            </button>
             <button onClick={() => handleDeleteTrend(selectedTrend.id)} className="btn w-full text-sm text-red-400 hover:bg-red-500/10 border border-red-500/20">
               <Trash2 className="w-4 h-4 mr-1" /> Remove Trend
             </button>
           </div>
         </div>
+        </div>
+      )}
+
+      {/* Generated Blog Post Preview */}
+      {generatedBlog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={() => setGeneratedBlog(null)}>
+          <div className="bg-surface-800 border border-white/[0.08] rounded-2xl w-full max-w-3xl max-h-[85vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-5 border-b border-white/[0.06]">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <FileText className="w-4 h-4 text-purple-400" />
+                  <h3 className="font-bold text-white">Generated Blog Post</h3>
+                </div>
+                <p className="text-xs text-slate-500">Keyword: "{generatedBlog.keyword}" · Market: {generatedBlog.market}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={handleCopyBlogPost} className="btn btn-secondary text-xs gap-1.5">
+                  <Copy className="w-3.5 h-3.5" /> Copy JSON
+                </button>
+                <button onClick={() => setGeneratedBlog(null)} className="p-1.5 rounded hover:bg-white/5 text-slate-500 hover:text-white">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+            <div className="p-5 overflow-y-auto flex-1">
+              <div className="mb-4 p-3 rounded-lg bg-white/[0.03] border border-white/[0.06]">
+                <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">SEO Title</p>
+                <p className="text-sm font-medium text-white">{generatedBlog.title}</p>
+                <p className="text-[10px] text-slate-500 uppercase tracking-wider mt-3 mb-1">URL Slug</p>
+                <p className="text-xs text-novalyte-400 font-mono">/blog/{generatedBlog.slug}</p>
+              </div>
+              <div className="prose prose-sm max-w-none text-slate-300 [&_h2]:text-white [&_h2]:font-semibold [&_h2]:text-base [&_h2]:mt-6 [&_h2]:mb-2 [&_h3]:text-slate-200 [&_h3]:font-semibold [&_h3]:text-sm [&_h3]:mt-4 [&_h3]:mb-2 [&_p]:text-sm [&_p]:leading-relaxed [&_p]:mb-3 [&_ul]:pl-5 [&_ul]:my-2 [&_li]:text-sm [&_li]:leading-relaxed [&_li]:mb-1"
+                dangerouslySetInnerHTML={{ __html: generatedBlog.content }} />
+            </div>
+            <div className="p-4 border-t border-white/[0.06] flex items-center justify-between">
+              <p className="text-[10px] text-slate-500">Copy the JSON and add it to intel-landing/blog/posts.ts to publish</p>
+              <button onClick={handleCopyBlogPost} className="btn btn-primary text-xs gap-1.5">
+                <Copy className="w-3.5 h-3.5" /> Copy Blog Post
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

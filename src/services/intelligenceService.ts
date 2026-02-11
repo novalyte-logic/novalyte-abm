@@ -33,6 +33,7 @@ export async function generatePersonalizedEmail(
   contact: CRMContact,
   sequenceStep: 'intro' | 'follow_up' | 'breakup',
   previousEmails?: SentEmail[],
+  userDirection?: string,
 ): Promise<AIGeneratedEmail> {
   const c = contact.clinic;
   const dm = contact.decisionMaker;
@@ -56,6 +57,7 @@ ${c.website ? `- Website: ${c.website}` : ''}
 
 SEQUENCE STEP: ${sequenceStep}
 ${prevSubjects ? `PREVIOUS EMAIL SUBJECTS (don't repeat): ${prevSubjects}` : ''}
+${userDirection ? `\nUSER DIRECTION (follow this approach closely): ${userDirection}` : ''}
 
 RULES:
 - ${sequenceStep === 'intro' ? 'First touch — lead with a specific data point about their market or services. Be curious, not salesy.' : ''}

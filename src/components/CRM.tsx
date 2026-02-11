@@ -7,6 +7,7 @@ import {
   Zap, Target, FileText, ChevronDown, ChevronUp,
   BarChart3, ArrowUpRight, Sparkles, CircleDot, ArrowUpDown,
   ChevronLeft, ChevronRight, MapPinned, Loader2, Radar, Map as MapIcon,
+  Trash2,
 } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
 import { enrichmentService } from '../services/enrichmentService';
@@ -392,6 +393,17 @@ function CRM() {
             <p className="text-xs text-slate-500 mt-0.5">{filtered.length} accounts across {regions.length} region{regions.length !== 1 ? 's' : ''}</p>
           </div>
           <div className="flex items-center gap-2">
+            {contacts.length > 0 && (
+              <button onClick={() => {
+                if (confirm(`Clear all ${contacts.length} CRM contacts? This also removes them from Supabase.`)) {
+                  useAppStore.getState().clearContacts();
+                  toast.success('All CRM contacts cleared');
+                }
+              }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-red-400 bg-red-500/10 border border-red-500/20 hover:bg-red-500/20 transition-all">
+                <Trash2 className="w-3.5 h-3.5" /> Clear All
+              </button>
+            )}
             {[
               { label: 'Accounts', value: stats.total, color: 'text-slate-300 bg-white/5 ring-white/[0.06]' },
               { label: 'Regions', value: stats.regions, color: 'text-novalyte-400 bg-novalyte-500/10 ring-novalyte-500/20' },

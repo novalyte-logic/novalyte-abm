@@ -6,7 +6,7 @@ import {
   ChevronDown, ChevronUp, ChevronLeft, X, AlertCircle, Radio, Headphones,
   TrendingUp, Building2, Shield, UserCheck, Sparkles, Activity,
   Globe, Mail, Edit3, Eye, SkipForward, PhoneForwarded, Loader2,
-  BadgeCheck, Hash, Stethoscope, Settings,
+  BadgeCheck, Hash, Stethoscope, Settings, Plus,
 } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
 import { voiceAgentService } from '../services/voiceAgentService';
@@ -113,10 +113,16 @@ export default function VoiceAgent() {
   useEffect(() => { batchRef.current = batchCalling; }, [batchCalling]);
 
   /* ─── Queue ─── */
+  const [manualQueueIds, setManualQueueIds] = useState<Set<string>>(new Set());
+
+  // All callable contacts (for the "Add to Queue" picker)
+  const callableContacts = useMemo(() => {
+    return contacts.filter(c => c.clinic.phone);
+  }, [contacts]);
+
+  // Queue only shows manually added contacts
   const queue = useMemo(() => {
-    let list = contacts.filter(c =>
-      (c.status === 'ready_to_call' || c.status === 'new' || c.status === 'follow_up') && c.clinic.phone
-    );
+    let list = contacts.filter(c => manualQueueIds.has(c.id) && c.clinic.phone);
     if (search) {
       const q = search.toLowerCase();
       list = list.filter(c =>
@@ -136,7 +142,7 @@ export default function VoiceAgent() {
       }
     });
     return list;
-  }, [contacts, search, queueSort]);
+  }, [contacts, manualQueueIds, search, queueSort]);
 
   /* ─── Stats ─── */
   const stats = useMemo(() => {
@@ -373,13 +379,21 @@ export default function VoiceAgent() {
           expandedId={expandedId} setExpandedId={setExpandedId}
           customScripts={customScripts} setCustomScripts={setCustomScripts}
           updateContactStatus={updateContactStatus}
+          callableContacts={callableContacts}
+          manualQueueIds={manualQueueIds}
+          setManualQueueIds={setManualQueueIds}
         />
       )}
       {tab === 'active' && (
         <ActiveTab calls={activeCalls} contacts={contacts} tick={tick} onSelect={setSelectedCall} onClearAll={clearStaleCalls} />
       )}
       {tab === 'history' && (
-        <HistoryTab calls={callHistory} contacts={contacts} onSelect={setSelectedCall} />
+        <HistoryTab calls={callHistory} contacts={contacts} onSelect={setSelectedCall} onClear={() => {
+          if (confirm(`Clear all ${callHistory.length} call history records?`)) {
+            useAppStore.getState().clearCallHistory();
+            toast.success('Call history cleared');
+          }
+        }} />
       )}
       {tab === 'dialpad' && (
         <DialPadTab
@@ -667,6 +681,7 @@ function QueueTab({
   callingIds, batchCalling, batchDelay, setBatchDelay,
   onCall, onBatchCall, isConfigured, expandedId, setExpandedId,
   customScripts, setCustomScripts, updateContactStatus,
+  callableContacts, manualQueueIds, setManualQueueIds,
 }: {
   queue: CRMContact[];
   search: string; setSearch: (s: string) => void;
@@ -680,7 +695,25 @@ function QueueTab({
   customScripts: Record<string, string>;
   setCustomScripts: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   updateContactStatus: (id: string, status: ContactStatus) => void;
+  callableContacts: CRMContact[];
+  manualQueueIds: Set<string>;
+  setManualQueueIds: React.Dispatch<React.SetStateAction<Set<string>>>;
 }) {
+  const [showAddPicker, setShowAddPicker] = useState(false);
+  const [addSearch, setAddSearch] = useState('');
+
+  const addableContacts = useMemo(() => {
+    let list = callableContacts.filter(c => !manualQueueIds.has(c.id));
+    if (addSearch) {
+      const q = addSearch.toLowerCase();
+      list = list.filter(c =>
+        c.clinic.name.toLowerCase().includes(q) ||
+        c.clinic.address.city.toLowerCase().includes(q) ||
+        (c.decisionMaker && `${c.decisionMaker.firstName} ${c.decisionMaker.lastName}`.toLowerCase().includes(q))
+      );
+    }
+    return list.sort((a, b) => b.score - a.score).slice(0, 50);
+  }, [callableContacts, manualQueueIds, addSearch]);
   return (
     <div className="space-y-4">
       {/* Controls bar */}
@@ -710,8 +743,56 @@ function QueueTab({
             className="btn btn-primary gap-2">
             <Zap className="w-4 h-4" /> Call All ({queue.length})
           </button>
+          <button onClick={() => setShowAddPicker(!showAddPicker)}
+            className={cn('btn gap-2', showAddPicker ? 'bg-[#06B6D4]/20 text-[#06B6D4] border border-[#06B6D4]/30' : 'btn-secondary')}>
+            <Plus className="w-4 h-4" /> Add to Queue
+          </button>
+          {manualQueueIds.size > 0 && (
+            <button onClick={() => { setManualQueueIds(new Set()); toast.success('Queue cleared'); }}
+              className="btn bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 gap-2">
+              <XCircle className="w-4 h-4" /> Clear Queue
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Add to Queue Picker */}
+      {showAddPicker && (
+        <div className="glass-card p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <h4 className="text-sm font-semibold text-slate-200">Add Clinics to Call Queue</h4>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-slate-500">{callableContacts.length} callable · {manualQueueIds.size} queued</span>
+              <button onClick={() => setShowAddPicker(false)} className="text-slate-500 hover:text-slate-300"><X className="w-4 h-4" /></button>
+            </div>
+          </div>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+            <input value={addSearch} onChange={e => setAddSearch(e.target.value)}
+              placeholder="Search clinics to add..." className="input pl-10 w-full" />
+          </div>
+          <div className="max-h-[240px] overflow-y-auto space-y-1">
+            {addableContacts.map(c => (
+              <button key={c.id} onClick={() => {
+                setManualQueueIds(prev => new Set(prev).add(c.id));
+                toast.success(`${c.clinic.name} added to queue`);
+              }}
+                className="w-full flex items-center gap-3 p-2.5 rounded-lg hover:bg-white/[0.04] transition-all text-left">
+                <div className={cn('w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold shrink-0',
+                  c.score >= 70 ? 'bg-emerald-500/15 text-emerald-400' : 'bg-white/5 text-slate-400')}>{c.score}</div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-medium text-slate-200 truncate">{c.clinic.name}</p>
+                  <p className="text-[10px] text-slate-500">{c.clinic.address.city}, {c.clinic.address.state} · {c.clinic.phone}</p>
+                </div>
+                <Plus className="w-4 h-4 text-[#06B6D4] shrink-0" />
+              </button>
+            ))}
+            {addableContacts.length === 0 && (
+              <p className="text-xs text-slate-500 text-center py-4">No more clinics to add</p>
+            )}
+          </div>
+        </div>
+      )}
 
       {!isConfigured && (
         <div className="glass-card p-4 border-amber-500/20 flex items-center gap-3">
@@ -727,7 +808,10 @@ function QueueTab({
         <div className="glass-card p-12 text-center">
           <Users className="w-10 h-10 text-slate-600 mx-auto mb-3" />
           <p className="text-slate-400">No contacts in the call queue</p>
-          <p className="text-xs text-slate-500 mt-1">Add contacts with status "Ready to Call" from the CRM</p>
+          <p className="text-xs text-slate-500 mt-1">Click "Add to Queue" to manually add clinics for calling</p>
+          <button onClick={() => setShowAddPicker(true)} className="btn btn-primary gap-2 mt-4 mx-auto">
+            <Plus className="w-4 h-4" /> Add Clinics to Queue
+          </button>
         </div>
       ) : (
         <div className="space-y-2">
@@ -872,6 +956,13 @@ function QueueTab({
                           }} className="btn btn-secondary gap-1.5 text-xs justify-center">
                             <Copy className="w-3 h-3" /> Copy #
                           </button>
+                          <button onClick={() => {
+                            // Navigate to Email Outreach with this clinic pre-selected
+                            useAppStore.getState().setCurrentView('email');
+                            toast.success(`Switched to Email Outreach — find ${clinic.name} in the list`);
+                          }} className="btn bg-[#06B6D4]/10 text-[#06B6D4] border border-[#06B6D4]/20 hover:bg-[#06B6D4]/20 gap-1.5 text-xs justify-center col-span-2">
+                            <Mail className="w-3 h-3" /> Send Email
+                          </button>
                         </div>
 
                         {/* Services list */}
@@ -972,8 +1063,8 @@ function ActiveTab({ calls, contacts, tick, onSelect, onClearAll }: {
    HISTORY TAB
    ═══════════════════════════════════════════════════════════════ */
 
-function HistoryTab({ calls, contacts, onSelect }: {
-  calls: VoiceCall[]; contacts: CRMContact[]; onSelect: (c: VoiceCall) => void;
+function HistoryTab({ calls, contacts, onSelect, onClear }: {
+  calls: VoiceCall[]; contacts: CRMContact[]; onSelect: (c: VoiceCall) => void; onClear: () => void;
 }) {
   const sorted = useMemo(() =>
     [...calls].sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime()), [calls]);
@@ -989,6 +1080,13 @@ function HistoryTab({ calls, contacts, onSelect }: {
   }
   return (
     <div className="glass-card overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.06]">
+        <p className="text-xs text-slate-500">{sorted.length} call{sorted.length !== 1 ? 's' : ''}</p>
+        <button onClick={onClear}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/15 border border-red-500/20 transition-all">
+          <XCircle className="w-3.5 h-3.5" /> Clear History
+        </button>
+      </div>
       <div className="overflow-x-auto">
       <table className="w-full min-w-[640px]">
         <thead>

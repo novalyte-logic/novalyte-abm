@@ -286,6 +286,7 @@ function ComposeTab({
   const [importText, setImportText] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'verified' | 'risky' | 'unverified'>('all');
   const [sortBy, setSortBy] = useState<'score' | 'name' | 'city' | 'confidence'>('score');
+  const [aiDirection, setAiDirection] = useState('');
 
   // Eligible contacts: have email, not emailed today
   const eligible = useMemo(() => {
@@ -482,7 +483,7 @@ function ComposeTab({
     const step = getStep(contact);
     const prevEmails = sentEmails.filter(e => e.contactId === contact.id);
     try {
-      const ai = await generatePersonalizedEmail(contact, step, prevEmails);
+      const ai = await generatePersonalizedEmail(contact, step, prevEmails, aiDirection || undefined);
       return {
         contactId: contact.id, contact, email,
         subject: ai.subject, html: ai.html, plainText: ai.plainText,
@@ -853,6 +854,21 @@ function ComposeTab({
         <p className="text-[10px] text-slate-500 mb-3">
           Gemini writes a unique email per clinic using their services, market data, keywords, rating, and decision maker info. Edit any draft before sending.
         </p>
+
+        {/* AI Direction — user describes the approach/angle */}
+        <div className="mb-3">
+          <label className="text-[10px] text-novalyte-400 uppercase tracking-wider font-medium mb-1.5 flex items-center gap-1.5">
+            <Wand2 className="w-3 h-3" /> AI Direction (optional)
+          </label>
+          <textarea
+            value={aiDirection}
+            onChange={e => setAiDirection(e.target.value)}
+            placeholder="e.g. Focus on GLP-1 weight loss opportunity, mention our 40% close rate, offer a free market analysis call..."
+            rows={2}
+            className="w-full bg-white/[0.02] border border-white/[0.08] rounded-lg px-3 py-2 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-novalyte-500/40 resize-none"
+          />
+          <p className="text-[9px] text-slate-600 mt-1">Tell Gemini the angle, tone, or offer you want in the first message. Leave blank for auto-personalization.</p>
+        </div>
 
         {generating && (
           <div className="mb-3">
@@ -2207,10 +2223,20 @@ function StreamTab({ emails, onRefresh, refreshing }: {
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <p className="text-xs text-slate-500">{sorted.length} emails in stream</p>
-        <button onClick={onRefresh} disabled={refreshing} className="btn btn-secondary gap-2 text-xs">
-          <RefreshCw className={cn('w-3.5 h-3.5', refreshing && 'animate-spin')} />
-          {refreshing ? 'Refreshing...' : 'Refresh All'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => {
+            if (confirm(`Clear all ${sorted.length} sent email records?`)) {
+              useAppStore.getState().clearSentEmails();
+              toast.success('Sent emails cleared');
+            }
+          }} className="btn bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 gap-2 text-xs">
+            <Trash2 className="w-3.5 h-3.5" /> Clear All
+          </button>
+          <button onClick={onRefresh} disabled={refreshing} className="btn btn-secondary gap-2 text-xs">
+            <RefreshCw className={cn('w-3.5 h-3.5', refreshing && 'animate-spin')} />
+            {refreshing ? 'Refreshing...' : 'Refresh All'}
+          </button>
+        </div>
       </div>
 
       <div className="glass-card overflow-hidden">

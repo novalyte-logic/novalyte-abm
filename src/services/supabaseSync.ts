@@ -556,6 +556,56 @@ class SupabaseSyncService {
       campaigns,
     };
   }
+
+  // ─── Delete all rows from a table ───
+  async deleteAllKeywordTrends(): Promise<void> {
+    if (!this.ready || !supabase) return;
+    const { error } = await supabase.from('keyword_trends').delete().neq('id', '');
+    if (error) console.error('deleteAllKeywordTrends error:', error.message);
+    else console.log('✓ Cleared keyword_trends from Supabase');
+  }
+
+  async deleteAllClinics(): Promise<void> {
+    if (!this.ready || !supabase) return;
+    const { error } = await supabase.from('clinics').delete().neq('id', '');
+    if (error) console.error('deleteAllClinics error:', error.message);
+    else console.log('✓ Cleared clinics from Supabase');
+  }
+
+  async deleteAllContacts(): Promise<void> {
+    if (!this.ready || !supabase) return;
+    // Delete junction table first (foreign key constraint)
+    await supabase.from('contact_keyword_matches').delete().neq('contact_id', '');
+    const { error } = await supabase.from('contacts').delete().neq('id', '');
+    if (error) console.error('deleteAllContacts error:', error.message);
+    else console.log('✓ Cleared contacts from Supabase');
+  }
+
+  async deleteAllCalls(): Promise<void> {
+    if (!this.ready || !supabase) return;
+    const { error } = await supabase.from('voice_calls').delete().neq('id', '');
+    if (error) console.error('deleteAllCalls error:', error.message);
+    else console.log('✓ Cleared voice_calls from Supabase');
+  }
+
+  async deleteAllCampaigns(): Promise<void> {
+    if (!this.ready || !supabase) return;
+    const { error } = await supabase.from('campaigns').delete().neq('id', '');
+    if (error) console.error('deleteAllCampaigns error:', error.message);
+    else console.log('✓ Cleared campaigns from Supabase');
+  }
+
+  /** Nuclear option — delete all user data from Supabase */
+  async deleteAll(): Promise<void> {
+    if (!this.ready || !supabase) return;
+    console.log('🗑️ Deleting all data from Supabase...');
+    await this.deleteAllCalls();
+    await this.deleteAllCampaigns();
+    await this.deleteAllContacts();
+    await this.deleteAllKeywordTrends();
+    await this.deleteAllClinics();
+    console.log('✓ All Supabase data deleted');
+  }
 }
 
 export const supabaseSync = new SupabaseSyncService();

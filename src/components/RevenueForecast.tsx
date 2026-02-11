@@ -5,6 +5,7 @@ import {
   ChevronRight, Heart, Syringe, Pill, Scissors, Droplets,
   ShieldCheck, CircleDot, X, Phone, Mail,
   Send, ExternalLink, Loader2, Square, CheckSquare,
+  Calculator, SlidersHorizontal,
 } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
 import { generateRevenueForecast, RevenueForecast } from '../services/intelligenceService';
@@ -273,6 +274,10 @@ function ConfidenceRing({ confidence }: { confidence: number }) {
 export default function RevenueForecastPage() {
   const { contacts, sentEmails, callHistory, setCurrentView } = useAppStore();
   const [drillDown, setDrillDown] = useState<{ title: string; subtitle: string; clinics: any[] } | null>(null);
+  const [selectedVertical, setSelectedVertical] = useState<string | null>(null);
+  const [customLeadPrice, setCustomLeadPrice] = useState<number | null>(null);
+  const [customLeadsPerClinic, setCustomLeadsPerClinic] = useState<number>(20);
+  const [customCloseRate, setCustomCloseRate] = useState<number | null>(null);
 
   const forecast = useMemo<RevenueForecast | null>(() => {
     if (contacts.length === 0) return null;
@@ -410,6 +415,26 @@ export default function RevenueForecastPage() {
   const maxSvcRevenue = Math.max(...forecast.serviceBreakdown.map(s => s.monthlyRevenue), 1);
   const maxMarketRevenue = Math.max(...forecast.topMarkets.map(m => m.projected), 1);
 
+  // Dynamic confidence based on selected vertical
+  const activeConfidence = useMemo(() => {
+    if (!selectedVertical) return forecast.confidence;
+    const svc = forecast.serviceBreakdown.find(v => v.service === selectedVertical);
+    if (!svc) return forecast.confidence;
+    const clinics = getClinicsForService(svc.service);
+    const withEmail = clinics.filter(c => c.email).length;
+    const highScore = clinics.filter(c => c.score >= 70).length;
+    let conf = 20;
+    if (clinics.length >= 5) conf += 10;
+    if (clinics.length >= 20) conf += 10;
+    if (clinics.length >= 50) conf += 10;
+    if (withEmail >= 5) conf += 10;
+    if (withEmail >= 20) conf += 10;
+    if (highScore >= 3) conf += 10;
+    if (highScore >= 10) conf += 10;
+    if (svc.avgCPL > 0) conf += 5;
+    return Math.min(95, conf);
+  }, [selectedVertical, forecast, getClinicsForService]);
+
   return (
     <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 max-w-[1600px] mx-auto animate-fade-in">
       {drillDown && <ClinicDrillDown {...drillDown} onClose={() => setDrillDown(null)} />}
@@ -428,14 +453,14 @@ export default function RevenueForecastPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <ConfidenceRing confidence={forecast.confidence} />
+          <ConfidenceRing confidence={activeConfidence} />
           <div className="text-right">
             <p className="text-[10px] text-slate-500 uppercase tracking-wider">Confidence</p>
             <p className={cn('text-sm font-semibold',
-              forecast.confidence >= 60 ? 'text-emerald-400' : forecast.confidence >= 40 ? 'text-amber-400' : 'text-slate-400'
-            )}>{forecast.confidence >= 60 ? 'High' : forecast.confidence >= 40 ? 'Moderate' : 'Low'}</p>
+              activeConfidence >= 60 ? 'text-emerald-400' : activeConfidence >= 40 ? 'text-amber-400' : 'text-slate-400'
+            )}>{activeConfidence >= 60 ? 'High' : activeConfidence >= 40 ? 'Moderate' : 'Low'}</p>
             <p className="text-[9px] text-slate-600 mt-0.5">
-              {forecast.qualifiedClinics > 0 ? `${forecast.qualifiedClinics} qualified` : `${forecast.clinicsWithEmail} w/ email`} · {sentEmails.length} emails sent
+              {selectedVertical ? `${selectedVertical}` : `${forecast.qualifiedClinics > 0 ? `${forecast.qualifiedClinics} qualified` : `${forecast.clinicsWithEmail} w/ email`}`} · {sentEmails.length} emails sent
             </p>
           </div>
         </div>
@@ -533,6 +558,186 @@ export default function RevenueForecastPage() {
           </div>
         </div>
       </div>
+
+      {/* ═══ Vertical Revenue Calculator ═══ */}
+      {forecast.serviceBreakdown.length > 0 && (() => {
+        const verticals = forecast.serviceBreakdown;
+        const active = selectedVertical ? verticals.find(v => v.service === selectedVertical) || verticals[0] : verticals[0];
+        const activeClinics = getClinicsForService(active.service);
+        const totalInVertical = activeClinics.length;
+        const withEmail = activeClinics.filter(c => c.email).length;
+        const leadPrice = customLeadPrice ?? active.avgCPL;
+        const leadsPerClinic = customLeadsPerClinic;
+        const closeRate = customCloseRate ?? forecast.avgCloseRate;
+        const projectedMonthly = totalInVertical * leadPrice * leadsPerClinic;
+        const projectedQuarterly = projectedMonthly * 3;
+        const projectedAnnual = projectedMonthly * 12;
+        const activeIdx = verticals.indexOf(active);
+        const textColor = TEXT_COLORS[activeIdx >= 0 ? activeIdx % TEXT_COLORS.length : 0];
+        const bgColor = BG_COLORS[activeIdx >= 0 ? activeIdx % BG_COLORS.length : 0];
+        const Icon = getServiceIcon(active.service);
+
+        return (
+          <div className="glass-card overflow-hidden">
+            <div className="px-6 py-4 border-b border-white/[0.06] flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[#06B6D4] to-[#0891B2] flex items-center justify-center shadow-lg shadow-[#06B6D4]/20">
+                  <Calculator className="w-3.5 h-3.5 text-white" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-200">Vertical Revenue Calculator</h3>
+                  <p className="text-[10px] text-slate-600">Select a vertical to see projected monthly earnings if all clinics close</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <SlidersHorizontal className="w-3.5 h-3.5 text-slate-500" />
+                <span className="text-[10px] text-slate-500">Adjust sliders to model scenarios</span>
+              </div>
+            </div>
+            <div className="p-6">
+              {/* Vertical selector pills */}
+              <div className="flex flex-wrap gap-2 mb-6">
+                {verticals.map((v, i) => {
+                  const VIcon = getServiceIcon(v.service);
+                  const isActive = v.service === active.service;
+                  return (
+                    <button key={v.service} onClick={() => { setSelectedVertical(v.service); setCustomLeadPrice(null); setCustomCloseRate(null); }}
+                      className={cn('flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium transition-all border',
+                        isActive ? 'bg-[#06B6D4]/15 text-[#06B6D4] border-[#06B6D4]/30 shadow-lg shadow-[#06B6D4]/10' : 'bg-white/[0.03] text-slate-400 border-white/[0.06] hover:bg-white/[0.06] hover:text-slate-200')}>
+                      <VIcon className="w-3.5 h-3.5" />
+                      {v.service}
+                      <span className={cn('px-1.5 py-0.5 rounded-full text-[9px] font-bold',
+                        isActive ? 'bg-[#06B6D4]/20 text-[#06B6D4]' : 'bg-white/5 text-slate-500')}>
+                        {getClinicsForService(v.service).length}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="grid grid-cols-12 gap-6">
+                {/* Left: Controls */}
+                <div className="col-span-12 lg:col-span-5 space-y-5">
+                  {/* Active vertical info */}
+                  <div className="flex items-center gap-3 p-4 bg-white/[0.03] rounded-xl border border-white/[0.04]">
+                    <div className={cn('w-12 h-12 rounded-xl flex items-center justify-center', bgColor)}>
+                      <Icon className={cn('w-6 h-6', textColor)} />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-white">{active.service}</p>
+                      <p className="text-[10px] text-slate-500">{totalInVertical} clinics · {withEmail} with email · LTV ${(active.patientLTV / 1000).toFixed(1)}k</p>
+                    </div>
+                  </div>
+
+                  {/* Lead Price slider */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-xs text-slate-400">Lead Price</label>
+                      <span className="text-sm font-bold text-[#06B6D4] tabular-nums">${leadPrice}</span>
+                    </div>
+                    <input type="range" min={50} max={800} step={10} value={leadPrice}
+                      onChange={e => setCustomLeadPrice(Number(e.target.value))}
+                      className="w-full h-2 bg-white/5 rounded-full appearance-none cursor-pointer accent-[#06B6D4] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#06B6D4] [&::-webkit-slider-thumb]:shadow-lg [&::-webkit-slider-thumb]:shadow-[#06B6D4]/30" />
+                    <div className="flex justify-between text-[9px] text-slate-600 mt-1"><span>$50</span><span>$800</span></div>
+                  </div>
+
+                  {/* Leads per clinic slider */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-xs text-slate-400">Leads / Clinic / Month</label>
+                      <span className="text-sm font-bold text-[#06B6D4] tabular-nums">{leadsPerClinic}</span>
+                    </div>
+                    <input type="range" min={5} max={60} step={1} value={leadsPerClinic}
+                      onChange={e => setCustomLeadsPerClinic(Number(e.target.value))}
+                      className="w-full h-2 bg-white/5 rounded-full appearance-none cursor-pointer accent-[#06B6D4] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#06B6D4] [&::-webkit-slider-thumb]:shadow-lg [&::-webkit-slider-thumb]:shadow-[#06B6D4]/30" />
+                    <div className="flex justify-between text-[9px] text-slate-600 mt-1"><span>5</span><span>60</span></div>
+                  </div>
+
+                  {/* Close rate slider */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-xs text-slate-400">Close Rate</label>
+                      <span className="text-sm font-bold text-[#06B6D4] tabular-nums">{closeRate}%</span>
+                    </div>
+                    <input type="range" min={5} max={80} step={1} value={closeRate}
+                      onChange={e => setCustomCloseRate(Number(e.target.value))}
+                      className="w-full h-2 bg-white/5 rounded-full appearance-none cursor-pointer accent-[#06B6D4] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#06B6D4] [&::-webkit-slider-thumb]:shadow-lg [&::-webkit-slider-thumb]:shadow-[#06B6D4]/30" />
+                    <div className="flex justify-between text-[9px] text-slate-600 mt-1"><span>5%</span><span>80%</span></div>
+                  </div>
+
+                  {/* Reset button */}
+                  {(customLeadPrice !== null || customCloseRate !== null || customLeadsPerClinic !== 20) && (
+                    <button onClick={() => { setCustomLeadPrice(null); setCustomCloseRate(null); setCustomLeadsPerClinic(20); }}
+                      className="text-[10px] text-slate-500 hover:text-slate-300 transition-colors">
+                      ↺ Reset to defaults
+                    </button>
+                  )}
+                </div>
+
+                {/* Right: Projected numbers */}
+                <div className="col-span-12 lg:col-span-7 space-y-4">
+                  {/* Big projected monthly */}
+                  <div className="p-6 bg-gradient-to-br from-[#06B6D4]/10 to-emerald-500/5 rounded-2xl border border-[#06B6D4]/20 text-center">
+                    <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Projected Monthly Revenue</p>
+                    <p className="text-4xl font-bold text-[#06B6D4] tabular-nums">
+                      $<AnimatedNum value={projectedMonthly >= 1000000 ? projectedMonthly / 1000000 : projectedMonthly / 1000}
+                        decimals={projectedMonthly >= 1000000 ? 2 : 1} suffix={projectedMonthly >= 1000000 ? 'M' : 'k'} />
+                    </p>
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      If all {totalInVertical} {active.service} clinics close at ${leadPrice}/lead × {leadsPerClinic} leads/mo
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="p-4 bg-white/[0.03] rounded-xl border border-white/[0.04] text-center">
+                      <p className="text-[9px] text-slate-600 uppercase tracking-wider">Quarterly</p>
+                      <p className="text-lg font-bold text-slate-200 tabular-nums">
+                        $<AnimatedNum value={projectedQuarterly / 1000} decimals={1} suffix="k" />
+                      </p>
+                    </div>
+                    <div className="p-4 bg-white/[0.03] rounded-xl border border-white/[0.04] text-center">
+                      <p className="text-[9px] text-slate-600 uppercase tracking-wider">Annual</p>
+                      <p className="text-lg font-bold text-emerald-400 tabular-nums">
+                        $<AnimatedNum value={projectedAnnual >= 1000000 ? projectedAnnual / 1000000 : projectedAnnual / 1000}
+                          decimals={projectedAnnual >= 1000000 ? 2 : 1} suffix={projectedAnnual >= 1000000 ? 'M' : 'k'} />
+                      </p>
+                    </div>
+                    <div className="p-4 bg-white/[0.03] rounded-xl border border-white/[0.04] text-center">
+                      <p className="text-[9px] text-slate-600 uppercase tracking-wider">Per Clinic/Mo</p>
+                      <p className="text-lg font-bold text-slate-200 tabular-nums">
+                        $<AnimatedNum value={leadPrice * leadsPerClinic} />
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Breakdown math */}
+                  <div className="p-4 bg-white/[0.02] rounded-xl border border-white/[0.04]">
+                    <p className="text-[10px] text-slate-500 mb-3 font-medium">Revenue Math</p>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-slate-400">{totalInVertical} clinics × ${leadPrice}/lead × {leadsPerClinic} leads</span>
+                        <span className="text-xs font-bold text-[#06B6D4] tabular-nums">${projectedMonthly.toLocaleString()}/mo</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-slate-400">Patient LTV at {closeRate}% close rate</span>
+                        <span className="text-xs font-bold text-emerald-400 tabular-nums">
+                          ${Math.round(active.patientLTV * (closeRate / 100)).toLocaleString()}/patient
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-slate-400">Clinic ROI</span>
+                        <span className="text-xs font-bold text-violet-400 tabular-nums">
+                          {(((closeRate / 100) * active.patientLTV) / leadPrice).toFixed(1)}x
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ═══ Conversion Funnel ═══ */}
       <div className="glass-card p-6">

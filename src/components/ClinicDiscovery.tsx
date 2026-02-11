@@ -476,6 +476,16 @@ function ClinicDiscovery() {
               <Brain className="w-4 h-4 mr-2" /> Push to AI Engine ({filteredClinics.length})
             </button>
           )}
+          {clinics.length > 0 && (
+            <button onClick={() => {
+              if (confirm(`Clear all ${clinics.length} discovered clinics? This cannot be undone.`)) {
+                useAppStore.getState().clearClinics();
+                toast.success('All clinics cleared');
+              }
+            }} className="btn bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20">
+              <Trash2 className="w-4 h-4 mr-2" /> Clear All ({clinics.length})
+            </button>
+          )}
         </div>
       </div>
 

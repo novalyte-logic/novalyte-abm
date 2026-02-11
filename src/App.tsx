@@ -85,7 +85,7 @@ function LoginScreen({ onAuth }: { onAuth: (session: SessionInfo) => void }) {
               <div className="w-[3px] h-[70%] bg-novalyte-400 rotate-[-40deg] rounded-full" />
             </div>
           </div>
-          <h1 className="mt-4 text-xl font-bold text-slate-100">Novalyte<span className="text-novalyte-400 text-[8px] align-super">™</span> AI</h1>
+          <h1 className="mt-4 text-xl font-bold text-slate-100">Novalyte AI</h1>
           <p className="text-xs text-slate-500 mt-1">AI Intelligence Engine · Restricted Access</p>
         </div>
 
@@ -208,7 +208,7 @@ function App() {
         try { const raw = localStorage.getItem('novalyte_ai_engine_clinics'); return raw ? JSON.parse(raw).length || null : null; } catch { return null; }
       }
       case 'leads': {
-        try { const raw = localStorage.getItem('novalyte_ai_engine_clinics'); return raw ? JSON.parse(raw).length || null : null; } catch { return null; }
+        try { const raw = localStorage.getItem('novalyte_patient_leads_count'); return raw ? parseInt(raw, 10) || null : null; } catch { return null; }
       }
       default: return null;
     }
@@ -249,10 +249,9 @@ function App() {
   };
 
   const handleClear = () => {
-    trackAction('clear', 'Cleared all local data');
-    if (!confirm('Clear all local data? This will reload the app.')) return;
-    localStorage.removeItem('novalyte-store');
-    window.location.reload();
+    trackAction('clear', 'Factory reset — cleared all local data');
+    if (!confirm('⚠️ Factory Reset: This will clear ALL data across every tab and reload the app. Continue?')) return;
+    useAppStore.getState().factoryReset();
   };
 
   const handleLogout = () => {
@@ -289,7 +288,7 @@ function App() {
             </div>
           </div>
           <div>
-            <h1 className="text-sm font-bold text-slate-100">Novalyte<span className="text-novalyte-400 text-[6px] align-super">™</span> AI</h1>
+            <h1 className="text-sm font-bold text-slate-100">Novalyte AI</h1>
             <p className="text-[9px] text-slate-500">AI Intelligence Engine</p>
           </div>
         </div>
@@ -368,7 +367,7 @@ function App() {
           </div>
           {!collapsed && (
             <div className="ml-3 min-w-0">
-              <h1 className="text-sm font-bold tracking-tight">Novalyte<span className="text-novalyte-400 text-[7px] align-super">™</span> AI</h1>
+              <h1 className="text-sm font-bold tracking-tight">Novalyte AI</h1>
               <p className="text-[10px] text-slate-500 flex items-center gap-1">
                 <Brain className="w-2.5 h-2.5" /> AI Intelligence Engine
               </p>
