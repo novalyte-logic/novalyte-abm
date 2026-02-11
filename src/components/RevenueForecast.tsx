@@ -280,21 +280,49 @@ export default function RevenueForecastPage() {
     return generateRevenueForecast(contacts, sentEmails, callData);
   }, [contacts, sentEmails, callHistory]);
 
-  // Build clinic lookup by service vertical
+  // Build clinic lookup by service vertical — uses same label normalization as forecast
   const clinicsByService = useMemo(() => {
     const map = new Map<string, any[]>();
+    // Build a mapping from raw service keywords to normalized forecast labels
+    const SERVICE_LABEL_MAP: Record<string, string> = {
+      trt: 'TRT / Hormone Therapy', testosterone: 'Testosterone Therapy', hormone: 'Hormone Optimization',
+      ed: 'ED Treatment', erectile: 'Erectile Dysfunction', sexual: 'Sexual Health',
+      peptide: 'Peptide Therapy', 'glp-1': 'GLP-1 / Weight Loss', semaglutide: 'Semaglutide',
+      tirzepatide: 'Tirzepatide', weight: 'Weight Management', hair: 'Hair Restoration',
+      prp: 'PRP Therapy', iv: 'IV Therapy', 'anti-aging': 'Anti-Aging', aesthetic: 'Aesthetics',
+      hgh: 'HGH Therapy', bioidentical: 'Bioidentical Hormones',
+    };
+
     for (const c of contacts) {
+      const labelsAdded = new Set<string>();
       for (const svc of c.clinic.services || []) {
-        // Normalize service name to match forecast breakdown labels
-        const normalized = svc.trim();
-        if (!map.has(normalized)) map.set(normalized, []);
-        map.get(normalized)!.push({
-          id: c.id, name: c.clinic.name,
-          city: c.clinic.address.city, state: c.clinic.address.state,
-          phone: c.clinic.phone, email: c.decisionMaker?.email || c.clinic.managerEmail || c.clinic.email,
-          score: c.score, services: c.clinic.services,
-          affluence: c.clinic.marketZone.affluenceScore,
-        });
+        const lower = svc.toLowerCase();
+        // Match to normalized labels (same logic as matchServiceEconomics)
+        for (const [key, label] of Object.entries(SERVICE_LABEL_MAP)) {
+          if (lower.includes(key) && !labelsAdded.has(label)) {
+            labelsAdded.add(label);
+            if (!map.has(label)) map.set(label, []);
+            map.get(label)!.push({
+              id: c.id, name: c.clinic.name,
+              city: c.clinic.address.city, state: c.clinic.address.state,
+              phone: c.clinic.phone, email: c.decisionMaker?.email || c.clinic.managerEmail || c.clinic.email,
+              score: c.score, services: c.clinic.services,
+              affluence: c.clinic.marketZone.affluenceScore,
+            });
+          }
+        }
+        // If no match, add under general label
+        if (labelsAdded.size === 0) {
+          const genLabel = "Men's Health (General)";
+          if (!map.has(genLabel)) map.set(genLabel, []);
+          map.get(genLabel)!.push({
+            id: c.id, name: c.clinic.name,
+            city: c.clinic.address.city, state: c.clinic.address.state,
+            phone: c.clinic.phone, email: c.decisionMaker?.email || c.clinic.managerEmail || c.clinic.email,
+            score: c.score, services: c.clinic.services,
+            affluence: c.clinic.marketZone.affluenceScore,
+          });
+        }
       }
     }
     return map;
@@ -317,8 +345,21 @@ export default function RevenueForecastPage() {
     return map;
   }, [contacts]);
 
-  // Find clinics for a service vertical (fuzzy match against forecast labels)
+  // Find clinics for a service vertical — exact match on normalized labels, deduped
   const getClinicsForService = useCallback((serviceLabel: string) => {
+    // Exact match first (labels now match between forecast and our map)
+    const exact = clinicsByService.get(serviceLabel);
+    if (exact && exact.length > 0) {
+      // Deduplicate by clinic id
+      const seen = new Set<string>();
+      return exact.filter(c => {
+        if (seen.has(c.id)) return false;
+        seen.add(c.id);
+        return true;
+      }).sort((a, b) => (b.score || 0) - (a.score || 0));
+    }
+
+    // Fuzzy fallback — check all keys for partial match
     const results: any[] = [];
     const seen = new Set<string>();
     for (const [key, clinics] of clinicsByService) {
@@ -328,7 +369,6 @@ export default function RevenueForecastPage() {
         }
       }
     }
-    // Sort by score desc
     return results.sort((a, b) => (b.score || 0) - (a.score || 0));
   }, [clinicsByService]);
 
