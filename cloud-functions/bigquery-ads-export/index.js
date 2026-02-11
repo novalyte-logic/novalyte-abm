@@ -17,8 +17,8 @@ functions.http('bigqueryAdsExportHandler', async (req, res) => {
     const { format = 'json', tier = 'all', limit = 500 } = req.body || {};
 
     const tierFilter = tier === 'all'
-      ? "propensity_tier IN ('hot', 'warm', 'cold')"
-      : `propensity_tier = '${tier}'`;
+      ? "cs.propensity_tier IN ('hot', 'warm', 'cold')"
+      : `cs.propensity_tier = '${tier}'`;
 
     // Pull scored clinics with full data for ad generation
     const [rows] = await bq.query(`
