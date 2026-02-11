@@ -650,6 +650,42 @@ export default function AIEngine() {
     setPushingToCRM(false);
   };
 
+  // ═══ EXPORT FOR GOOGLE ADS (AI STUDIO) ═══
+  const [adsExporting, setAdsExporting] = useState(false);
+  const exportForGoogleAds = async (format: 'json' | 'csv' = 'json') => {
+    setAdsExporting(true);
+    try {
+      const res = await fetch('https://us-central1-warp-486714.cloudfunctions.net/bigquery-ads-export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ format, tier: filterTier, limit: 500 }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+
+      if (format === 'csv') {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url;
+        a.download = `novalyte-google-ads-export-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+        URL.revokeObjectURL(url);
+        toast.success('Google Ads CSV downloaded — import into Google Ads Editor');
+      } else {
+        const data = await res.json();
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url;
+        a.download = `novalyte-ai-studio-export-${new Date().toISOString().slice(0, 10)}.json`; a.click();
+        URL.revokeObjectURL(url);
+        toast.success(`Exported ${data.total_clinics} clinics for AI Studio`);
+      }
+    } catch (err: any) {
+      toast.error('Export failed: ' + (err.message || 'Unknown error'));
+    }
+    setAdsExporting(false);
+  };
+
+  const [showAdsMenu, setShowAdsMenu] = useState(false);
+
   const exportProspects = () => {
     if (!filteredProspects.length) { toast.error('No prospects to export.'); return; }
     const csv = ['name,city,state,phone,email,lead_score,tier,affluence,services,is_duplicate',
@@ -932,6 +968,32 @@ export default function AIEngine() {
                 <button onClick={exportProspects} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-xs font-medium transition-all">
                   <Download className="w-3.5 h-3.5" /> CSV
                 </button>
+                <div className="relative">
+                  <button onClick={() => setShowAdsMenu(!showAdsMenu)} disabled={adsExporting}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#06B6D4]/10 hover:bg-[#06B6D4]/20 border border-[#06B6D4]/30 text-[#06B6D4] text-xs font-semibold transition-all">
+                    {adsExporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />} Google Ads Export
+                  </button>
+                  {showAdsMenu && (
+                    <div className="absolute right-0 top-full mt-1 bg-black border border-white/10 rounded-lg shadow-xl z-50 py-1 min-w-[220px] animate-fade-in">
+                      <button onClick={() => { exportForGoogleAds('json'); setShowAdsMenu(false); }}
+                        className="w-full flex items-center gap-2 px-3 py-2.5 text-xs text-slate-300 hover:bg-white/5">
+                        <Brain className="w-3.5 h-3.5 text-[#06B6D4]" />
+                        <div className="text-left"><p className="font-medium">JSON for AI Studio</p><p className="text-[10px] text-slate-500">Full data + market stats for ad builder</p></div>
+                      </button>
+                      <button onClick={() => { exportForGoogleAds('csv'); setShowAdsMenu(false); }}
+                        className="w-full flex items-center gap-2 px-3 py-2.5 text-xs text-slate-300 hover:bg-white/5">
+                        <Download className="w-3.5 h-3.5 text-emerald-400" />
+                        <div className="text-left"><p className="font-medium">CSV for Ads Editor</p><p className="text-[10px] text-slate-500">Pre-formatted campaigns + ad groups</p></div>
+                      </button>
+                      <div className="border-t border-white/[0.06] my-1" />
+                      <button onClick={() => { navigator.clipboard.writeText('https://us-central1-warp-486714.cloudfunctions.net/bigquery-ads-export'); toast.success('API endpoint copied'); setShowAdsMenu(false); }}
+                        className="w-full flex items-center gap-2 px-3 py-2.5 text-xs text-slate-300 hover:bg-white/5">
+                        <Copy className="w-3.5 h-3.5 text-slate-400" />
+                        <div className="text-left"><p className="font-medium">Copy API Endpoint</p><p className="text-[10px] text-slate-500">For direct AI Studio integration</p></div>
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -1115,6 +1177,7 @@ export default function AIEngine() {
       )}
 
       {/* ═══ Prospect Detail Modal ═══ */}
+      {showAdsMenu && <div className="fixed inset-0 z-40" onClick={() => setShowAdsMenu(false)} />}
       {selectedProspect && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" onClick={() => setSelectedProspect(null)}>
           <div className="glass-card p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>

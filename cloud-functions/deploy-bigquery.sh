@@ -70,12 +70,31 @@ cd ..
 echo "✅ bigquery-score deployed"
 echo ""
 
+# Deploy bigquery-ads-export
+echo "📦 Deploying bigquery-ads-export..."
+cd bigquery-ads-export
+gcloud functions deploy bigquery-ads-export \
+  --gen2 \
+  --runtime=nodejs20 \
+  --region=$REGION \
+  --source=. \
+  --entry-point=bigqueryAdsExportHandler \
+  --trigger-http \
+  --allow-unauthenticated \
+  --project=$PROJECT_ID \
+  --memory=512MB \
+  --timeout=540s
+cd ..
+echo "✅ bigquery-ads-export deployed"
+echo ""
+
 echo "🎉 All Cloud Functions deployed successfully!"
 echo ""
 echo "URLs:"
-echo "  Sync:  https://$REGION-$PROJECT_ID.cloudfunctions.net/bigquery-sync"
-echo "  Train: https://$REGION-$PROJECT_ID.cloudfunctions.net/bigquery-train"
-echo "  Score: https://$REGION-$PROJECT_ID.cloudfunctions.net/bigquery-score"
+echo "  Sync:   https://$REGION-$PROJECT_ID.cloudfunctions.net/bigquery-sync"
+echo "  Train:  https://$REGION-$PROJECT_ID.cloudfunctions.net/bigquery-train"
+echo "  Score:  https://$REGION-$PROJECT_ID.cloudfunctions.net/bigquery-score"
+echo "  Export: https://$REGION-$PROJECT_ID.cloudfunctions.net/bigquery-ads-export"
 echo ""
 echo "Next steps:"
 echo "  1. Create BigQuery dataset: bq --project_id=$PROJECT_ID mk --dataset --location=US novalyte_intelligence"
