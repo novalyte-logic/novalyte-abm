@@ -31,7 +31,7 @@ interface AppState {
   // Email outreach
   sentEmails: SentEmail[];
   // UI State
-  currentView: 'dashboard' | 'keywords' | 'clinics' | 'crm' | 'voice' | 'campaigns' | 'email' | 'forecast' | 'leads' | 'analytics';
+  currentView: 'dashboard' | 'keywords' | 'clinics' | 'crm' | 'voice' | 'campaigns' | 'email' | 'forecast' | 'leads' | 'analytics' | 'aiengine';
   // Supabase
   supabaseReady: boolean;
   isSyncing: boolean;

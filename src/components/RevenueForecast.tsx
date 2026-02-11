@@ -1,13 +1,17 @@
-import { useMemo } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import {
-  DollarSign, TrendingUp, Users, Target, BarChart3, Zap,
+  DollarSign, TrendingUp, BarChart3, Zap,
   ArrowUpRight, Building2, MapPin, Activity, Sparkles,
   ChevronRight, Heart, Syringe, Pill, Scissors, Droplets,
-  ShieldCheck, CircleDot,
+  ShieldCheck, CircleDot, X, Phone, Mail,
+  Send, ExternalLink, Loader2, Square, CheckSquare,
 } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
 import { generateRevenueForecast, RevenueForecast } from '../services/intelligenceService';
 import { cn } from '../utils/cn';
+import toast from 'react-hot-toast';
+
+const RESEND_PROXY = 'https://us-central1-intel-landing-page.cloudfunctions.net/resend-proxy';
 
 /* ─── Service icons ─── */
 const svcIcons: Record<string, typeof Heart> = {
@@ -25,7 +29,7 @@ function getServiceIcon(name: string) {
   return Activity;
 }
 
-/* ─── Color palette for charts ─── */
+/* ─── Color palette ─── */
 const CHART_COLORS = [
   'from-emerald-500 to-emerald-600', 'from-blue-500 to-blue-600',
   'from-violet-500 to-violet-600', 'from-amber-500 to-amber-600',
@@ -41,15 +45,310 @@ const BG_COLORS = [
   'bg-rose-500/10', 'bg-cyan-500/10', 'bg-orange-500/10', 'bg-pink-500/10',
 ];
 
+/* ─── Drill-down Modal for clinics ─── */
+function ClinicDrillDown({
+  title, subtitle, clinics, onClose,
+}: {
+  title: string; subtitle: string; clinics: any[]; onClose: () => void;
+}) {
+  const [search, setSearch] = useState('');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [sending, setSending] = useState(false);
+  const [sendProgress, setSendProgress] = useState({ sent: 0, total: 0 });
+  const [filterTier, setFilterTier] = useState<'all' | 'high' | 'medium' | 'low'>('all');
+
+  const filtered = clinics.filter(c => {
+    if (search) {
+      const q = search.toLowerCase();
+      if (!(c.name || '').toLowerCase().includes(q) && !(c.city || '').toLowerCase().includes(q)) return false;
+    }
+    if (filterTier !== 'all') {
+      const score = c.score || 0;
+      if (filterTier === 'high' && score < 70) return false;
+      if (filterTier === 'medium' && (score < 40 || score >= 70)) return false;
+      if (filterTier === 'low' && score >= 40) return false;
+    }
+    return true;
+  });
+
+  const toggle = (id: string) => setSelected(prev => {
+    const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next;
+  });
+  const selectAll = () => {
+    if (selected.size === filtered.length) setSelected(new Set());
+    else setSelected(new Set(filtered.map(c => c.id)));
+  };
+
+  const pushToCRM = () => {
+    if (selected.size === 0) { toast.error('Select clinics first'); return; }
+    const sel = clinics.filter(c => selected.has(c.id));
+    try {
+      const existing = JSON.parse(localStorage.getItem('novalyte_crm_imports') || '[]');
+      const newImports = sel.map(c => ({
+        id: c.id, name: c.name, city: c.city, state: c.state,
+        phone: c.phone, email: c.email, score: (c.score || 0) / 100,
+        tier: c.score >= 70 ? 'hot' : c.score >= 40 ? 'warm' : 'cold',
+        affluence: c.affluence, services: c.services,
+        importedAt: new Date().toISOString(), source: 'revenue-forecast',
+      }));
+      const merged = [...newImports, ...existing.filter((e: any) => !selected.has(e.id))];
+      localStorage.setItem('novalyte_crm_imports', JSON.stringify(merged.slice(0, 500)));
+      toast.success(`${sel.length} clinics pushed to Pipeline CRM`);
+      setSelected(new Set());
+    } catch { toast.error('Failed to push to CRM'); }
+  };
+
+  const addToSequence = async () => {
+    const withEmail = clinics.filter(c => c.email);
+    const targets = withEmail.slice(0, 100);
+    if (targets.length === 0) { toast.error('No clinics with emails'); return; }
+    setSending(true);
+    setSendProgress({ sent: 0, total: targets.length });
+    let sent = 0;
+    for (const clinic of targets) {
+      try {
+        const subject = `${clinic.name} — patient demand growing in ${clinic.city}`;
+        const html = `<div style="font-family:Inter,Arial,sans-serif;color:#1e293b;max-width:600px;margin:0 auto;padding:24px;">
+  <p style="font-size:15px;line-height:1.7;">Hi ${clinic.name ? `the team at ${clinic.name}` : 'there'},</p>
+  <p style="font-size:15px;line-height:1.7;">I came across your clinic while analyzing men's health providers in ${clinic.city}, ${clinic.state}.</p>
+  <p style="font-size:15px;line-height:1.7;">Our intelligence platform shows strong patient demand in your area — clinics offering similar services are seeing <strong>30-40% increases</strong> in qualified patient inquiries within 90 days.</p>
+  <p style="font-size:15px;line-height:1.7;">Would a quick 15-minute call this week make sense?</p>
+  <p style="font-size:15px;line-height:1.7;margin-top:24px;">Best,<br/><strong>Jamil</strong><br/><span style="color:#64748b;font-size:13px;">Novalyte · Men's Health Growth Platform</span></p>
+</div>`;
+        await fetch(RESEND_PROXY, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to: clinic.email, from: 'Novalyte AI <noreply@novalyte.io>', subject, html, reply_to: 'admin@novalyte.io',
+            tags: [{ name: 'source', value: 'revenue-forecast' }, { name: 'clinic', value: (clinic.name || '').slice(0, 256) }] }),
+        });
+        sent++;
+        setSendProgress(p => ({ ...p, sent }));
+        await new Promise(r => setTimeout(r, 600));
+      } catch {}
+    }
+    setSending(false);
+    if (sent > 0) toast.success(`Sent ${sent} personalized emails`);
+    else toast.error('Failed to send');
+  };
+
+  const emailCount = clinics.filter(c => c.email).length;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" onClick={onClose}>
+      <div className="glass-card w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="px-6 py-4 border-b border-white/[0.06] bg-[#06B6D4]/5 shrink-0">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h3 className="text-lg font-bold text-white">{title}</h3>
+              <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>
+            </div>
+            <button onClick={onClose} className="text-slate-500 hover:text-slate-300"><X className="w-5 h-5" /></button>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {selected.size > 0 && (
+              <button onClick={pushToCRM} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-400 text-xs font-semibold hover:bg-emerald-500/30 border border-emerald-500/30">
+                <ExternalLink className="w-3.5 h-3.5" /> Push {selected.size} to CRM
+              </button>
+            )}
+            <button onClick={addToSequence} disabled={sending || emailCount === 0}
+              className={cn('flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold',
+                sending ? 'bg-white/5 text-slate-500' : emailCount > 0 ? 'bg-[#06B6D4] text-black hover:bg-[#22D3EE]' : 'bg-white/5 text-slate-500 cursor-not-allowed')}>
+              {sending ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> {sendProgress.sent}/{sendProgress.total}</> :
+                <><Send className="w-3.5 h-3.5" /> Sequence {Math.min(emailCount, 100)} w/ Email</>}
+            </button>
+            <div className="flex gap-1 ml-2">
+              {(['all', 'high', 'medium', 'low'] as const).map(t => (
+                <button key={t} onClick={() => setFilterTier(t)}
+                  className={cn('px-2 py-1 rounded-lg text-[10px] font-medium',
+                    filterTier === t ? 'bg-[#06B6D4]/20 text-[#06B6D4] border border-[#06B6D4]/30' : 'bg-white/5 text-slate-400 hover:bg-white/10')}>
+                  {t === 'all' ? 'All' : t.charAt(0).toUpperCase() + t.slice(1)}
+                </button>
+              ))}
+            </div>
+            <input type="text" placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)}
+              className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-slate-200 text-xs placeholder-slate-500 w-40 ml-auto" />
+          </div>
+        </div>
+        {/* Table */}
+        <div className="flex-1 overflow-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="text-slate-500 border-b border-white/[0.06] bg-white/[0.02] sticky top-0 z-10">
+                <th className="py-2.5 px-3 w-10"><button onClick={selectAll} className="text-slate-500 hover:text-[#06B6D4]">
+                  {selected.size === filtered.length && filtered.length > 0 ? <CheckSquare className="w-4 h-4 text-[#06B6D4]" /> : <Square className="w-4 h-4" />}
+                </button></th>
+                <th className="text-left py-2.5 px-3 font-medium text-xs">Clinic</th>
+                <th className="text-left py-2.5 px-3 font-medium text-xs">Location</th>
+                <th className="text-left py-2.5 px-3 font-medium text-xs">Contact</th>
+                <th className="text-left py-2.5 px-3 font-medium text-xs">Score</th>
+                <th className="text-left py-2.5 px-3 font-medium text-xs">Services</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((c, i) => (
+                <tr key={c.id || i} className={cn('border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors',
+                  selected.has(c.id) && 'bg-[#06B6D4]/5')}>
+                  <td className="py-2.5 px-3">
+                    <button onClick={() => toggle(c.id)} className="text-slate-500 hover:text-[#06B6D4]">
+                      {selected.has(c.id) ? <CheckSquare className="w-4 h-4 text-[#06B6D4]" /> : <Square className="w-4 h-4" />}
+                    </button>
+                  </td>
+                  <td className="py-2.5 px-3"><p className="text-slate-200 font-medium text-sm">{c.name}</p></td>
+                  <td className="py-2.5 px-3 text-slate-400 text-xs">{c.city}, {c.state}</td>
+                  <td className="py-2.5 px-3">
+                    {c.phone && <p className="text-slate-300 text-[10px] flex items-center gap-1"><Phone className="w-3 h-3" />{c.phone}</p>}
+                    {c.email && <p className="text-[#06B6D4] text-[10px] truncate max-w-[160px] flex items-center gap-1"><Mail className="w-3 h-3" />{c.email}</p>}
+                    {!c.phone && !c.email && <span className="text-slate-600 text-[10px]">—</span>}
+                  </td>
+                  <td className="py-2.5 px-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-12 h-1.5 bg-white/5 rounded-full overflow-hidden">
+                        <div className={cn('h-full rounded-full', c.score >= 70 ? 'bg-emerald-500' : c.score >= 40 ? 'bg-amber-500' : 'bg-slate-500')}
+                          style={{ width: `${c.score}%` }} />
+                      </div>
+                      <span className="text-xs font-bold text-slate-300 tabular-nums">{c.score}</span>
+                    </div>
+                  </td>
+                  <td className="py-2.5 px-3">
+                    <div className="flex gap-1 flex-wrap">{(c.services || []).slice(0, 2).map((s: string, idx: number) => (
+                      <span key={idx} className="px-1.5 py-0.5 rounded bg-white/5 text-[9px] text-slate-400">{s}</span>
+                    ))}</div>
+                  </td>
+                </tr>
+              ))}
+              {filtered.length === 0 && (
+                <tr><td colSpan={6} className="py-8 text-center text-xs text-slate-500">No clinics match filters</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Animated counter ─── */
+function AnimatedNum({ value, prefix = '', suffix = '', decimals = 0 }: { value: number; prefix?: string; suffix?: string; decimals?: number }) {
+  const [display, setDisplay] = useState(0);
+  useEffect(() => {
+    if (value === 0) { setDisplay(0); return; }
+    const start = display;
+    const diff = value - start;
+    const startTime = Date.now();
+    const duration = 1200;
+    const animate = () => {
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      setDisplay(start + diff * eased);
+      if (progress < 1) requestAnimationFrame(animate);
+    };
+    requestAnimationFrame(animate);
+  }, [value]);
+  const formatted = decimals > 0 ? display.toFixed(decimals) : Math.round(display).toLocaleString();
+  return <>{prefix}{formatted}{suffix}</>;
+}
+
+/* ─── Pulsing confidence ring ─── */
+function ConfidenceRing({ confidence }: { confidence: number }) {
+  const [anim, setAnim] = useState(0);
+  useEffect(() => { const t = setTimeout(() => setAnim(confidence), 300); return () => clearTimeout(t); }, [confidence]);
+  const circumference = 2 * Math.PI * 28;
+  const offset = circumference - (anim / 100) * circumference;
+  const color = confidence >= 60 ? '#10B981' : confidence >= 40 ? '#F59E0B' : '#64748B';
+  return (
+    <div className="relative w-16 h-16">
+      <svg width={64} height={64} className="-rotate-90">
+        <circle cx={32} cy={32} r={28} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="3" />
+        <circle cx={32} cy={32} r={28} fill="none" stroke={color} strokeWidth="3" strokeLinecap="round"
+          strokeDasharray={circumference} strokeDashoffset={offset} className="transition-all duration-1000 ease-out" />
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center">
+        <span className="text-sm font-bold text-white tabular-nums">{Math.round(anim)}%</span>
+      </div>
+    </div>
+  );
+}
 
 export default function RevenueForecastPage() {
   const { contacts, sentEmails, callHistory, setCurrentView } = useAppStore();
+  const [drillDown, setDrillDown] = useState<{ title: string; subtitle: string; clinics: any[] } | null>(null);
 
   const forecast = useMemo<RevenueForecast | null>(() => {
     if (contacts.length === 0) return null;
     const callData = callHistory.map(c => ({ contactId: c.contactId, outcome: c.outcome }));
     return generateRevenueForecast(contacts, sentEmails, callData);
   }, [contacts, sentEmails, callHistory]);
+
+  // Build clinic lookup by service vertical
+  const clinicsByService = useMemo(() => {
+    const map = new Map<string, any[]>();
+    for (const c of contacts) {
+      for (const svc of c.clinic.services || []) {
+        // Normalize service name to match forecast breakdown labels
+        const normalized = svc.trim();
+        if (!map.has(normalized)) map.set(normalized, []);
+        map.get(normalized)!.push({
+          id: c.id, name: c.clinic.name,
+          city: c.clinic.address.city, state: c.clinic.address.state,
+          phone: c.clinic.phone, email: c.decisionMaker?.email || c.clinic.managerEmail || c.clinic.email,
+          score: c.score, services: c.clinic.services,
+          affluence: c.clinic.marketZone.affluenceScore,
+        });
+      }
+    }
+    return map;
+  }, [contacts]);
+
+  // Build clinic lookup by market
+  const clinicsByMarket = useMemo(() => {
+    const map = new Map<string, any[]>();
+    for (const c of contacts) {
+      const key = `${c.clinic.marketZone.city}, ${c.clinic.marketZone.state}`;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push({
+        id: c.id, name: c.clinic.name,
+        city: c.clinic.address.city, state: c.clinic.address.state,
+        phone: c.clinic.phone, email: c.decisionMaker?.email || c.clinic.managerEmail || c.clinic.email,
+        score: c.score, services: c.clinic.services,
+        affluence: c.clinic.marketZone.affluenceScore,
+      });
+    }
+    return map;
+  }, [contacts]);
+
+  // Find clinics for a service vertical (fuzzy match against forecast labels)
+  const getClinicsForService = useCallback((serviceLabel: string) => {
+    const results: any[] = [];
+    const seen = new Set<string>();
+    for (const [key, clinics] of clinicsByService) {
+      if (key.toLowerCase().includes(serviceLabel.toLowerCase()) || serviceLabel.toLowerCase().includes(key.toLowerCase())) {
+        for (const c of clinics) {
+          if (!seen.has(c.id)) { seen.add(c.id); results.push(c); }
+        }
+      }
+    }
+    // Sort by score desc
+    return results.sort((a, b) => (b.score || 0) - (a.score || 0));
+  }, [clinicsByService]);
+
+  const openServiceDrill = (svc: { service: string; clinics: number; avgCPL: number }) => {
+    const clinics = getClinicsForService(svc.service);
+    setDrillDown({
+      title: svc.service,
+      subtitle: `${clinics.length} clinics · $${svc.avgCPL}/lead avg · Likely buyers sorted by score`,
+      clinics,
+    });
+  };
+
+  const openMarketDrill = (mkt: { market: string; clinics: number; avgAffluence: number }) => {
+    const clinics = clinicsByMarket.get(mkt.market) || [];
+    setDrillDown({
+      title: mkt.market,
+      subtitle: `${clinics.length} clinics · Affluence ${mkt.avgAffluence}/10`,
+      clinics: clinics.sort((a, b) => (b.score || 0) - (a.score || 0)),
+    });
+  };
 
   if (!forecast) {
     return (
@@ -59,7 +358,7 @@ export default function RevenueForecastPage() {
         </div>
         <h2 className="text-xl font-bold text-white mb-2">Revenue Forecast</h2>
         <p className="text-sm text-slate-400 mb-6 text-center max-w-md">
-          Add clinics to your pipeline to see lead pricing, revenue projections, and ROI analysis based on real men's health clinic economics.
+          Add clinics to your pipeline to see lead pricing, revenue projections, and ROI analysis.
         </p>
         <button onClick={() => setCurrentView('clinics')} className="btn btn-primary gap-2">
           <Building2 className="w-4 h-4" /> Discover Clinics
@@ -73,6 +372,7 @@ export default function RevenueForecastPage() {
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 max-w-[1600px] mx-auto animate-fade-in">
+      {drillDown && <ClinicDrillDown {...drillDown} onClose={() => setDrillDown(null)} />}
 
       {/* ═══ Header ═══ */}
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
@@ -80,27 +380,30 @@ export default function RevenueForecastPage() {
           <div className="flex items-center gap-3 mb-1">
             <h1 className="text-2xl font-bold text-white tracking-tight">Revenue Forecast</h1>
             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold bg-gradient-to-r from-emerald-500 to-emerald-600 text-white shadow-lg shadow-emerald-500/20">
-              <DollarSign className="w-3 h-3" /> Lead Economics
+              <DollarSign className="w-3 h-3" /> Live
             </span>
           </div>
           <p className="text-sm text-slate-500">
-            Pre-qualified patient lead pricing based on {forecast.totalClinics} clinics across {forecast.topMarkets.length} markets
+            Real-time projections from {forecast.totalClinics} clinics across {forecast.topMarkets.length} markets · Updates as pipeline changes
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <div className={cn('flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium',
-            forecast.confidence >= 60 ? 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20' :
-            forecast.confidence >= 40 ? 'bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/20' :
-            'bg-white/5 text-slate-400 ring-1 ring-white/[0.06]'
-          )}>
-            <Target className="w-3 h-3" /> {forecast.confidence}% confidence
+        <div className="flex items-center gap-3">
+          <ConfidenceRing confidence={forecast.confidence} />
+          <div className="text-right">
+            <p className="text-[10px] text-slate-500 uppercase tracking-wider">Confidence</p>
+            <p className={cn('text-sm font-semibold',
+              forecast.confidence >= 60 ? 'text-emerald-400' : forecast.confidence >= 40 ? 'text-amber-400' : 'text-slate-400'
+            )}>{forecast.confidence >= 60 ? 'High' : forecast.confidence >= 40 ? 'Moderate' : 'Low'}</p>
+            <p className="text-[9px] text-slate-600 mt-0.5">
+              {forecast.qualifiedClinics > 0 ? `${forecast.qualifiedClinics} qualified` : `${forecast.clinicsWithEmail} w/ email`} · {sentEmails.length} emails sent
+            </p>
           </div>
         </div>
       </div>
 
       {/* ═══ Hero Numbers ═══ */}
       <div className="grid grid-cols-12 gap-4">
-        {/* Monthly Revenue — big hero card */}
+        {/* Monthly Revenue — animated */}
         <div className="col-span-12 lg:col-span-4 glass-card p-6 relative overflow-hidden">
           <div className="absolute top-0 right-0 w-48 h-48 bg-gradient-to-bl from-emerald-500/8 to-transparent rounded-bl-full pointer-events-none" />
           <div className="flex items-center gap-2 mb-4">
@@ -110,20 +413,23 @@ export default function RevenueForecastPage() {
             <div>
               <p className="text-[10px] text-slate-500 uppercase tracking-wider">Projected Monthly</p>
               <p className="text-3xl font-bold text-emerald-400 tabular-nums leading-none mt-0.5">
-                ${forecast.monthlyRevenue >= 1000 ? (forecast.monthlyRevenue / 1000).toFixed(1) + 'k' : forecast.monthlyRevenue}
+                $<AnimatedNum value={forecast.monthlyRevenue >= 1000 ? forecast.monthlyRevenue / 1000 : forecast.monthlyRevenue} decimals={forecast.monthlyRevenue >= 1000 ? 1 : 0} suffix={forecast.monthlyRevenue >= 1000 ? 'k' : ''} />
               </p>
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3 mt-4">
             <div className="p-3 bg-white/[0.03] rounded-xl border border-white/[0.04]">
               <p className="text-[10px] text-slate-500">Quarterly</p>
-              <p className="text-lg font-bold text-slate-200 tabular-nums">${(forecast.quarterlyRevenue / 1000).toFixed(1)}k</p>
+              <p className="text-lg font-bold text-slate-200 tabular-nums">$<AnimatedNum value={forecast.quarterlyRevenue / 1000} decimals={1} suffix="k" /></p>
             </div>
             <div className="p-3 bg-white/[0.03] rounded-xl border border-white/[0.04]">
               <p className="text-[10px] text-slate-500">Annual</p>
-              <p className="text-lg font-bold text-slate-200 tabular-nums">${(forecast.annualRevenue / 1000).toFixed(0)}k</p>
+              <p className="text-lg font-bold text-slate-200 tabular-nums">$<AnimatedNum value={forecast.annualRevenue / 1000} decimals={0} suffix="k" /></p>
             </div>
           </div>
+          <p className="text-[9px] text-slate-600 mt-3 text-center">
+            Adjusts in real-time as clinics qualify, emails open, and calls convert
+          </p>
         </div>
 
         {/* Lead Pricing Card */}
@@ -135,20 +441,15 @@ export default function RevenueForecastPage() {
             </div>
             <div>
               <p className="text-[10px] text-slate-500 uppercase tracking-wider">Avg Lead Price</p>
-              <p className="text-3xl font-bold text-novalyte-400 tabular-nums leading-none mt-0.5">${forecast.avgLeadPrice}</p>
+              <p className="text-3xl font-bold text-novalyte-400 tabular-nums leading-none mt-0.5">$<AnimatedNum value={forecast.avgLeadPrice} /></p>
             </div>
           </div>
-          {/* Price range bar */}
           <div className="mt-4">
             <div className="flex items-center justify-between text-[10px] text-slate-500 mb-1.5">
-              <span>${forecast.leadPriceRange.low}</span>
-              <span>Price Range</span>
-              <span>${forecast.leadPriceRange.high}</span>
+              <span>${forecast.leadPriceRange.low}</span><span>Price Range</span><span>${forecast.leadPriceRange.high}</span>
             </div>
             <div className="relative h-3 bg-white/5 rounded-full overflow-hidden">
-              <div className="absolute inset-y-0 bg-gradient-to-r from-emerald-500/40 via-novalyte-500/60 to-orange-500/40 rounded-full"
-                style={{ left: '0%', right: '0%' }} />
-              {/* Avg marker */}
+              <div className="absolute inset-y-0 bg-gradient-to-r from-emerald-500/40 via-novalyte-500/60 to-orange-500/40 rounded-full" style={{ left: '0%', right: '0%' }} />
               <div className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-lg border-2 border-novalyte-400"
                 style={{ left: `${Math.min(95, Math.max(5, ((forecast.avgLeadPrice - forecast.leadPriceRange.low) / (forecast.leadPriceRange.high - forecast.leadPriceRange.low)) * 100))}%` }} />
             </div>
@@ -174,7 +475,7 @@ export default function RevenueForecastPage() {
             </div>
             <div>
               <p className="text-[10px] text-slate-500 uppercase tracking-wider">Clinic ROI</p>
-              <p className="text-3xl font-bold text-violet-400 tabular-nums leading-none mt-0.5">{forecast.roiForClinic}x</p>
+              <p className="text-3xl font-bold text-violet-400 tabular-nums leading-none mt-0.5"><AnimatedNum value={forecast.roiForClinic} decimals={1} suffix="x" /></p>
             </div>
           </div>
           <p className="text-[11px] text-slate-500 leading-relaxed mb-4">
@@ -183,11 +484,11 @@ export default function RevenueForecastPage() {
           <div className="grid grid-cols-2 gap-3">
             <div className="p-3 bg-white/[0.03] rounded-xl border border-white/[0.04]">
               <p className="text-[10px] text-slate-500">Patient LTV</p>
-              <p className="text-lg font-bold text-slate-200 tabular-nums">${(forecast.avgPatientLTV / 1000).toFixed(1)}k</p>
+              <p className="text-lg font-bold text-slate-200 tabular-nums">$<AnimatedNum value={forecast.avgPatientLTV / 1000} decimals={1} suffix="k" /></p>
             </div>
             <div className="p-3 bg-white/[0.03] rounded-xl border border-white/[0.04]">
               <p className="text-[10px] text-slate-500">Close Rate</p>
-              <p className="text-lg font-bold text-slate-200 tabular-nums">{forecast.avgCloseRate}%</p>
+              <p className="text-lg font-bold text-slate-200 tabular-nums"><AnimatedNum value={forecast.avgCloseRate} suffix="%" /></p>
             </div>
           </div>
         </div>
@@ -198,6 +499,7 @@ export default function RevenueForecastPage() {
         <div className="flex items-center gap-2 mb-5">
           <Activity className="w-4 h-4 text-novalyte-400" />
           <h3 className="text-sm font-semibold text-slate-200">Conversion Funnel</h3>
+          <span className="text-[9px] text-slate-600 ml-2">Live pipeline metrics</span>
         </div>
         <div className="flex items-center gap-2">
           {[
@@ -210,26 +512,20 @@ export default function RevenueForecastPage() {
               <div className="flex-1">
                 <div className="flex items-center justify-between mb-1.5">
                   <span className="text-[10px] text-slate-500">{step.label}</span>
-                  <span className="text-sm font-bold text-slate-200 tabular-nums">{step.value}</span>
+                  <span className="text-sm font-bold text-slate-200 tabular-nums"><AnimatedNum value={step.value} /></span>
                 </div>
                 <div className="h-10 bg-white/5 rounded-lg overflow-hidden relative">
                   <div className={cn('h-full rounded-lg bg-gradient-to-r transition-all duration-700', step.color)}
                     style={{ width: `${Math.max(step.width, 8)}%` }} />
                   <div className="absolute inset-0 flex items-center justify-center">
-                    <span className="text-[11px] font-bold text-white/80 tabular-nums drop-shadow">
-                      {step.value}
-                    </span>
+                    <span className="text-[11px] font-bold text-white/80 tabular-nums drop-shadow">{step.value}</span>
                   </div>
                 </div>
                 {i < arr.length - 1 && step.value > 0 && arr[i + 1].value > 0 && (
-                  <p className="text-[9px] text-slate-600 mt-1 text-center">
-                    {Math.round((arr[i + 1].value / step.value) * 100)}% →
-                  </p>
+                  <p className="text-[9px] text-slate-600 mt-1 text-center">{Math.round((arr[i + 1].value / step.value) * 100)}% →</p>
                 )}
               </div>
-              {i < arr.length - 1 && (
-                <ChevronRight className="w-4 h-4 text-slate-700 shrink-0" />
-              )}
+              {i < arr.length - 1 && <ChevronRight className="w-4 h-4 text-slate-700 shrink-0" />}
             </div>
           ))}
         </div>
@@ -238,7 +534,7 @@ export default function RevenueForecastPage() {
       {/* ═══ Service Breakdown + Market Breakdown ═══ */}
       <div className="grid grid-cols-12 gap-4">
 
-        {/* Service Lead Pricing — visual bar chart */}
+        {/* Service Lead Pricing — CLICKABLE bars */}
         <div className="col-span-12 lg:col-span-7 glass-card overflow-hidden">
           <div className="px-6 py-4 border-b border-white/[0.06] flex items-center justify-between">
             <div className="flex items-center gap-2.5">
@@ -247,7 +543,7 @@ export default function RevenueForecastPage() {
               </div>
               <div>
                 <h3 className="text-sm font-semibold text-slate-200">Lead Pricing by Service</h3>
-                <p className="text-[10px] text-slate-600">{forecast.serviceBreakdown.length} service verticals</p>
+                <p className="text-[10px] text-slate-600">{forecast.serviceBreakdown.length} verticals · Click to see clinics</p>
               </div>
             </div>
           </div>
@@ -259,24 +555,26 @@ export default function RevenueForecastPage() {
               const textColor = TEXT_COLORS[i % TEXT_COLORS.length];
               const bgColor = BG_COLORS[i % BG_COLORS.length];
               return (
-                <div key={svc.service}>
+                <div key={svc.service} className="cursor-pointer group" onClick={() => openServiceDrill(svc)}>
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2.5">
-                      <div className={cn('w-8 h-8 rounded-lg flex items-center justify-center', bgColor)}>
+                      <div className={cn('w-8 h-8 rounded-lg flex items-center justify-center transition-all group-hover:scale-110', bgColor)}>
                         <Icon className={cn('w-4 h-4', textColor)} />
                       </div>
                       <div>
-                        <p className="text-sm font-medium text-slate-200">{svc.service}</p>
-                        <p className="text-[10px] text-slate-500">{svc.clinics} clinic{svc.clinics !== 1 ? 's' : ''} · Patient LTV ${(svc.patientLTV / 1000).toFixed(1)}k</p>
+                        <p className="text-sm font-medium text-slate-200 group-hover:text-white transition-colors">{svc.service}</p>
+                        <p className="text-[10px] text-slate-500">{svc.clinics} clinic{svc.clinics !== 1 ? 's' : ''} · LTV ${(svc.patientLTV / 1000).toFixed(1)}k</p>
                       </div>
                     </div>
-                    <div className="text-right">
-                      <p className={cn('text-lg font-bold tabular-nums', textColor)}>${svc.avgCPL}</p>
-                      <p className="text-[10px] text-slate-500">per lead</p>
+                    <div className="text-right flex items-center gap-2">
+                      <div>
+                        <p className={cn('text-lg font-bold tabular-nums', textColor)}>${svc.avgCPL}</p>
+                        <p className="text-[10px] text-slate-500">per lead</p>
+                      </div>
+                      <ChevronRight className="w-4 h-4 text-slate-600 opacity-0 group-hover:opacity-100 transition-opacity" />
                     </div>
                   </div>
-                  {/* Revenue bar */}
-                  <div className="relative h-7 bg-white/[0.03] rounded-lg overflow-hidden">
+                  <div className="relative h-7 bg-white/[0.03] rounded-lg overflow-hidden group-hover:bg-white/[0.05] transition-colors">
                     <div className={cn('h-full rounded-lg bg-gradient-to-r transition-all duration-700', color)}
                       style={{ width: `${Math.max(barWidth, 4)}%` }} />
                     <div className="absolute inset-0 flex items-center px-3">
@@ -297,7 +595,7 @@ export default function RevenueForecastPage() {
           </div>
         </div>
 
-        {/* Market Revenue — ranked list with bars */}
+        {/* Market Revenue — CLICKABLE rows */}
         <div className="col-span-12 lg:col-span-5 glass-card overflow-hidden">
           <div className="px-6 py-4 border-b border-white/[0.06] flex items-center justify-between">
             <div className="flex items-center gap-2.5">
@@ -306,7 +604,7 @@ export default function RevenueForecastPage() {
               </div>
               <div>
                 <h3 className="text-sm font-semibold text-slate-200">Revenue by Market</h3>
-                <p className="text-[10px] text-slate-600">{forecast.topMarkets.length} markets</p>
+                <p className="text-[10px] text-slate-600">{forecast.topMarkets.length} markets · Click to drill in</p>
               </div>
             </div>
           </div>
@@ -316,22 +614,25 @@ export default function RevenueForecastPage() {
               const textColor = TEXT_COLORS[i % TEXT_COLORS.length];
               const bgColor = BG_COLORS[i % BG_COLORS.length];
               return (
-                <div key={mkt.market}>
+                <div key={mkt.market} className="cursor-pointer group" onClick={() => openMarketDrill(mkt)}>
                   <div className="flex items-center justify-between mb-1.5">
                     <div className="flex items-center gap-2">
-                      <span className={cn('w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold',
+                      <span className={cn('w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold transition-all group-hover:scale-110',
                         i < 3 ? 'bg-gradient-to-br from-emerald-500 to-emerald-600 text-white shadow-lg shadow-emerald-500/20' : bgColor + ' ' + textColor
                       )}>{i + 1}</span>
                       <div>
-                        <p className="text-sm font-medium text-slate-200">{mkt.market}</p>
+                        <p className="text-sm font-medium text-slate-200 group-hover:text-white transition-colors">{mkt.market}</p>
                         <p className="text-[10px] text-slate-500">{mkt.clinics} clinics · Affluence {mkt.avgAffluence}/10</p>
                       </div>
                     </div>
-                    <p className={cn('text-sm font-bold tabular-nums', textColor)}>
-                      ${mkt.projected >= 1000 ? (mkt.projected / 1000).toFixed(1) + 'k' : mkt.projected}<span className="text-[10px] text-slate-500 font-normal">/mo</span>
-                    </p>
+                    <div className="flex items-center gap-2">
+                      <p className={cn('text-sm font-bold tabular-nums', textColor)}>
+                        ${mkt.projected >= 1000 ? (mkt.projected / 1000).toFixed(1) + 'k' : mkt.projected}<span className="text-[10px] text-slate-500 font-normal">/mo</span>
+                      </p>
+                      <ChevronRight className="w-4 h-4 text-slate-600 opacity-0 group-hover:opacity-100 transition-opacity" />
+                    </div>
                   </div>
-                  <div className="h-2.5 bg-white/[0.03] rounded-full overflow-hidden">
+                  <div className="h-2.5 bg-white/[0.03] rounded-full overflow-hidden group-hover:bg-white/[0.05] transition-colors">
                     <div className={cn('h-full rounded-full bg-gradient-to-r transition-all duration-700',
                       i < 3 ? 'from-emerald-500 to-emerald-400' : 'from-slate-600 to-slate-500'
                     )} style={{ width: `${Math.max(barWidth, 4)}%` }} />
@@ -351,25 +652,18 @@ export default function RevenueForecastPage() {
 
       {/* ═══ Pipeline Value + Insights ═══ */}
       <div className="grid grid-cols-12 gap-4">
-
-        {/* Pipeline value breakdown */}
         <div className="col-span-12 lg:col-span-5 glass-card p-6">
           <div className="flex items-center gap-2 mb-5">
             <Sparkles className="w-4 h-4 text-emerald-400" />
             <h3 className="text-sm font-semibold text-slate-200">Pipeline Value</h3>
           </div>
-
-          {/* Big pipeline number */}
           <div className="text-center mb-6">
             <p className="text-4xl font-bold text-emerald-400 tabular-nums">
-              ${forecast.pipelineValue >= 1000000
-                ? (forecast.pipelineValue / 1000000).toFixed(2) + 'M'
-                : (forecast.pipelineValue / 1000).toFixed(0) + 'k'}
+              $<AnimatedNum value={forecast.pipelineValue >= 1000000 ? forecast.pipelineValue / 1000000 : forecast.pipelineValue / 1000}
+                decimals={forecast.pipelineValue >= 1000000 ? 2 : 0} suffix={forecast.pipelineValue >= 1000000 ? 'M' : 'k'} />
             </p>
             <p className="text-[11px] text-slate-500 mt-1">Annual pipeline if all qualified clinics convert</p>
           </div>
-
-          {/* Visual donut-style breakdown */}
           <div className="space-y-3">
             {[
               { label: 'Monthly Revenue', value: forecast.monthlyRevenue, color: 'bg-emerald-500', textColor: 'text-emerald-400' },
@@ -381,17 +675,16 @@ export default function RevenueForecastPage() {
                 <div className={cn('w-3 h-3 rounded-full shrink-0', item.color)} />
                 <span className="text-xs text-slate-400 flex-1">{item.label}</span>
                 <span className={cn('text-sm font-bold tabular-nums', item.textColor)}>
-                  ${item.value >= 1000000 ? (item.value / 1000000).toFixed(2) + 'M' : (item.value / 1000).toFixed(1) + 'k'}
+                  $<AnimatedNum value={item.value >= 1000000 ? item.value / 1000000 : item.value / 1000}
+                    decimals={item.value >= 1000000 ? 2 : 1} suffix={item.value >= 1000000 ? 'M' : 'k'} />
                 </span>
               </div>
             ))}
           </div>
-
-          {/* Conversion rate visual */}
           <div className="mt-6 p-4 bg-white/[0.03] rounded-xl border border-white/[0.04]">
             <div className="flex items-center justify-between mb-2">
               <span className="text-[10px] text-slate-500 uppercase tracking-wider">Close Rate</span>
-              <span className="text-lg font-bold text-emerald-400 tabular-nums">{forecast.conversionRate}%</span>
+              <span className="text-lg font-bold text-emerald-400 tabular-nums"><AnimatedNum value={forecast.conversionRate} suffix="%" /></span>
             </div>
             <div className="h-3 bg-white/5 rounded-full overflow-hidden">
               <div className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full transition-all duration-700"
@@ -403,9 +696,7 @@ export default function RevenueForecastPage() {
           </div>
         </div>
 
-        {/* Insights + ROI explanation */}
         <div className="col-span-12 lg:col-span-7 space-y-4">
-
           {/* ROI Visual Card */}
           <div className="glass-card p-6 bg-gradient-to-br from-violet-600/10 to-novalyte-600/5 border-violet-500/10">
             <div className="flex items-center gap-2 mb-4">
@@ -413,28 +704,23 @@ export default function RevenueForecastPage() {
               <h3 className="text-sm font-semibold text-slate-200">Clinic ROI Breakdown</h3>
             </div>
             <div className="flex items-center gap-6">
-              {/* Visual flow: Lead Price → Close Rate → Patient LTV = ROI */}
               <div className="flex-1 flex items-center gap-3">
-                <div className="text-center flex-1">
-                  <div className="w-16 h-16 mx-auto rounded-2xl bg-novalyte-500/15 flex items-center justify-center mb-2 ring-1 ring-novalyte-500/20">
-                    <span className="text-lg font-bold text-novalyte-400 tabular-nums">${forecast.avgLeadPrice}</span>
+                {[
+                  { value: `$${forecast.avgLeadPrice}`, label: 'Lead Cost', color: 'bg-novalyte-500/15 ring-novalyte-500/20' },
+                  { value: `${forecast.avgCloseRate}%`, label: 'Close Rate', color: 'bg-amber-500/15 ring-amber-500/20' },
+                  { value: `$${(forecast.avgPatientLTV / 1000).toFixed(1)}k`, label: 'Patient LTV', color: 'bg-emerald-500/15 ring-emerald-500/20' },
+                ].map((item, i) => (
+                  <div key={item.label} className="flex items-center gap-3 flex-1">
+                    <div className="text-center flex-1">
+                      <div className={cn('w-16 h-16 mx-auto rounded-2xl flex items-center justify-center mb-2 ring-1', item.color)}>
+                        <span className={cn('text-lg font-bold tabular-nums',
+                          i === 0 ? 'text-novalyte-400' : i === 1 ? 'text-amber-400' : 'text-emerald-400')}>{item.value}</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500">{item.label}</p>
+                    </div>
+                    {i < 2 && <ArrowUpRight className="w-5 h-5 text-slate-600 shrink-0" />}
                   </div>
-                  <p className="text-[10px] text-slate-500">Lead Cost</p>
-                </div>
-                <ArrowUpRight className="w-5 h-5 text-slate-600 shrink-0" />
-                <div className="text-center flex-1">
-                  <div className="w-16 h-16 mx-auto rounded-2xl bg-amber-500/15 flex items-center justify-center mb-2 ring-1 ring-amber-500/20">
-                    <span className="text-lg font-bold text-amber-400 tabular-nums">{forecast.avgCloseRate}%</span>
-                  </div>
-                  <p className="text-[10px] text-slate-500">Close Rate</p>
-                </div>
-                <ArrowUpRight className="w-5 h-5 text-slate-600 shrink-0" />
-                <div className="text-center flex-1">
-                  <div className="w-16 h-16 mx-auto rounded-2xl bg-emerald-500/15 flex items-center justify-center mb-2 ring-1 ring-emerald-500/20">
-                    <span className="text-lg font-bold text-emerald-400 tabular-nums">${(forecast.avgPatientLTV / 1000).toFixed(1)}k</span>
-                  </div>
-                  <p className="text-[10px] text-slate-500">Patient LTV</p>
-                </div>
+                ))}
                 <span className="text-2xl font-bold text-slate-600">=</span>
                 <div className="text-center flex-1">
                   <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-br from-violet-500/20 to-emerald-500/20 flex items-center justify-center mb-2 ring-1 ring-violet-500/20">
@@ -460,7 +746,7 @@ export default function RevenueForecastPage() {
               </div>
               <div>
                 <h3 className="text-sm font-semibold text-slate-200">Revenue Insights</h3>
-                <p className="text-[10px] text-slate-600">Based on your pipeline data</p>
+                <p className="text-[10px] text-slate-600">Live analysis from your pipeline data</p>
               </div>
             </div>
             <div className="divide-y divide-white/[0.04]">
@@ -471,22 +757,20 @@ export default function RevenueForecastPage() {
                 </div>
               ))}
               {forecast.insights.length === 0 && (
-                <div className="px-6 py-8 text-center">
-                  <p className="text-xs text-slate-500">Add more clinics to generate insights</p>
-                </div>
+                <div className="px-6 py-8 text-center"><p className="text-xs text-slate-500">Add more clinics to generate insights</p></div>
               )}
             </div>
           </div>
         </div>
       </div>
 
-      {/* ═══ Bottom: Per-Service Detail Cards ═══ */}
+      {/* ═══ Service Vertical Cards — INTERACTIVE with clinic intel ═══ */}
       {forecast.serviceBreakdown.length > 0 && (
         <div>
           <div className="flex items-center gap-2 mb-4">
             <Zap className="w-4 h-4 text-novalyte-400" />
             <h3 className="text-sm font-semibold text-slate-200">Service Vertical Cards</h3>
-            <span className="text-[10px] text-slate-500">— what each pre-qualified patient lead is worth</span>
+            <span className="text-[10px] text-slate-500">— click any card to see clinics likely to buy</span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {forecast.serviceBreakdown.map((svc, i) => {
@@ -495,28 +779,32 @@ export default function RevenueForecastPage() {
               const bgColor = BG_COLORS[i % BG_COLORS.length];
               const color = CHART_COLORS[i % CHART_COLORS.length];
               const svcROI = Math.round((svc.patientLTV * (forecast.avgCloseRate / 100)) / svc.avgCPL * 10) / 10;
+              const svcClinics = getClinicsForService(svc.service);
+              const topBuyers = svcClinics.slice(0, 3);
+              const withEmail = svcClinics.filter(c => c.email).length;
+
               return (
-                <div key={svc.service} className="glass-card p-5 relative overflow-hidden group hover:bg-white/[0.04] transition-all">
-                  <div className="absolute top-0 right-0 w-24 h-24 bg-gradient-to-bl opacity-10 rounded-bl-full pointer-events-none"
-                    style={{ backgroundImage: `linear-gradient(to bottom left, var(--tw-gradient-stops))` }} />
+                <div key={svc.service}
+                  className="glass-card p-5 relative overflow-hidden group hover:bg-white/[0.04] transition-all cursor-pointer hover:border-white/[0.12]"
+                  onClick={() => openServiceDrill(svc)}>
+                  <div className="absolute top-0 right-0 w-24 h-24 bg-gradient-to-bl opacity-10 rounded-bl-full pointer-events-none" />
                   <div className="flex items-center gap-2.5 mb-4">
-                    <div className={cn('w-10 h-10 rounded-xl flex items-center justify-center', bgColor)}>
+                    <div className={cn('w-10 h-10 rounded-xl flex items-center justify-center transition-all group-hover:scale-110', bgColor)}>
                       <Icon className={cn('w-5 h-5', textColor)} />
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-semibold text-slate-200 truncate">{svc.service}</p>
-                      <p className="text-[10px] text-slate-500">{svc.clinics} clinic{svc.clinics !== 1 ? 's' : ''} in pipeline</p>
+                      <p className="text-[10px] text-slate-500">{svc.clinics} clinic{svc.clinics !== 1 ? 's' : ''} · {withEmail} w/ email</p>
                     </div>
+                    <ChevronRight className="w-4 h-4 text-slate-600 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
                   </div>
 
                   <div className="space-y-3">
-                    {/* Lead price — hero number */}
-                    <div className="text-center py-3 bg-white/[0.03] rounded-xl border border-white/[0.04]">
+                    <div className="text-center py-3 bg-white/[0.02] rounded-xl border border-white/[0.04]">
                       <p className={cn('text-2xl font-bold tabular-nums', textColor)}>${svc.avgCPL}</p>
                       <p className="text-[10px] text-slate-500">per qualified lead</p>
                     </div>
 
-                    {/* Stats grid */}
                     <div className="grid grid-cols-2 gap-2">
                       <div className="p-2 bg-white/[0.02] rounded-lg">
                         <p className="text-[9px] text-slate-600">Patient LTV</p>
@@ -536,7 +824,30 @@ export default function RevenueForecastPage() {
                       </div>
                     </div>
 
-                    {/* Mini revenue bar */}
+                    {/* Top likely buyers */}
+                    {topBuyers.length > 0 && (
+                      <div className="pt-2 border-t border-white/[0.06]">
+                        <p className="text-[9px] text-slate-600 uppercase tracking-wider mb-1.5">Top Likely Buyers</p>
+                        {topBuyers.map((c, idx) => (
+                          <div key={c.id || idx} className="flex items-center justify-between py-1">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <div className={cn('w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold',
+                                idx === 0 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-white/5 text-slate-500')}>{idx + 1}</div>
+                              <span className="text-[10px] text-slate-300 truncate">{c.name}</span>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {c.email && <Mail className="w-2.5 h-2.5 text-[#06B6D4]" />}
+                              <span className={cn('text-[9px] font-bold tabular-nums',
+                                c.score >= 70 ? 'text-emerald-400' : c.score >= 40 ? 'text-amber-400' : 'text-slate-500')}>{c.score}</span>
+                            </div>
+                          </div>
+                        ))}
+                        {svcClinics.length > 3 && (
+                          <p className="text-[9px] text-[#06B6D4] mt-1">+{svcClinics.length - 3} more →</p>
+                        )}
+                      </div>
+                    )}
+
                     <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
                       <div className={cn('h-full rounded-full bg-gradient-to-r transition-all duration-700', color)}
                         style={{ width: `${(svc.monthlyRevenue / maxSvcRevenue) * 100}%` }} />

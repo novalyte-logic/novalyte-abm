@@ -1,5 +1,11 @@
 /**
- * Intelligence Service — Gemini-powered features
+ * Intelligence Service — Multi-LLM powered features
+ * 
+ * Model routing:
+ * - Claude Sonnet 4 (Bedrock) → email personalization, competitor intel (strongest reasoning)
+ * - Claude Haiku 3.5 (Bedrock) → fast classification, structured extraction
+ * - Gemini 2.0 Flash (Vertex AI) → fallback when Bedrock unavailable
+ * 
  * #1 AI Email Personalization
  * #2 Smart Sequencing
  * #5 Competitor Intelligence
@@ -7,6 +13,7 @@
  * #8 Multi-Touch Attribution
  */
 import { vertexAI } from './vertexAI';
+import { bedrockService, MODELS } from './bedrockService';
 import { CRMContact } from '../types';
 import { SentEmail } from './resendService';
 
@@ -18,7 +25,8 @@ export interface AIGeneratedEmail {
   subject: string;
   html: string;
   plainText: string;
-  personalizationNotes: string; // why Gemini chose this angle
+  personalizationNotes: string;
+  model: string; // which LLM generated this
 }
 
 export async function generatePersonalizedEmail(
@@ -66,19 +74,38 @@ Respond ONLY with valid JSON:
   "personalizationNotes": "...(1 sentence explaining the angle you chose)..."
 }`;
 
-  const result = await vertexAI.generateJSON<{
-    subject: string;
-    body: string;
-    personalizationNotes: string;
-  }>({
-    prompt,
-    model: 'gemini-2.0-flash',
-    temperature: 0.7,
-    maxOutputTokens: 1024,
-  });
+  let result: { subject: string; body: string; personalizationNotes: string } | null = null;
+  let usedModel = 'unknown';
+
+  // Try Claude Sonnet first (strongest reasoning for persuasive copy)
+  if (bedrockService.isConfigured) {
+    try {
+      result = await bedrockService.generateJSON<typeof result>({
+        prompt,
+        model: MODELS.CLAUDE_OPUS,
+        temperature: 0.7,
+        maxTokens: 1024,
+        systemPrompt: 'You are an elite B2B sales copywriter. Always respond with valid JSON only, no markdown.',
+      });
+      usedModel = 'claude-opus-4.6';
+    } catch (err) {
+      console.warn('Bedrock Claude failed for email gen, falling back to Gemini:', err);
+    }
+  }
+
+  // Fallback to Gemini
+  if (!result?.subject || !result?.body) {
+    result = await vertexAI.generateJSON<typeof result>({
+      prompt,
+      model: 'gemini-2.0-flash',
+      temperature: 0.7,
+      maxOutputTokens: 1024,
+    });
+    usedModel = 'gemini-2.0-flash';
+  }
 
   if (!result?.subject || !result?.body) {
-    throw new Error('Gemini failed to generate email');
+    throw new Error('All LLMs failed to generate email');
   }
 
   // Convert plain text to HTML
@@ -98,6 +125,7 @@ ${htmlBody}
     html,
     plainText: result.body,
     personalizationNotes: result.personalizationNotes || '',
+    model: usedModel,
   };
 }
 
@@ -254,16 +282,17 @@ function addDays(date: Date, days: number): Date {
 
 
 /* ═══════════════════════════════════════════════════════════════
-   #5 — COMPETITOR INTELLIGENCE (Exa + Gemini)
+   #5 — COMPETITOR INTELLIGENCE (Claude + Gemini fallback)
    ═══════════════════════════════════════════════════════════════ */
 
 export interface CompetitorIntel {
   hasAgency: boolean;
   agencyName?: string;
-  agencyType?: string; // 'marketing', 'seo', 'ppc', 'full-service'
+  agencyType?: string;
   confidence: number;
   signals: string[];
   recommendation: string;
+  model: string;
 }
 
 export async function analyzeCompetitorIntel(contact: CRMContact): Promise<CompetitorIntel> {
@@ -296,18 +325,46 @@ Respond ONLY with valid JSON:
   "recommendation": "1-2 sentence outreach recommendation"
 }`;
 
-  const result = await vertexAI.generateJSON<CompetitorIntel>({
-    prompt,
-    model: 'gemini-2.0-flash',
-    temperature: 0.3,
-    maxOutputTokens: 512,
-  });
+  let result: CompetitorIntel | null = null;
+  let usedModel = 'unknown';
+
+  // Try Claude Haiku first (fast structured analysis)
+  if (bedrockService.isConfigured) {
+    try {
+      result = await bedrockService.generateJSON<CompetitorIntel>({
+        prompt,
+        model: MODELS.CLAUDE_HAIKU,
+        temperature: 0.3,
+        maxTokens: 512,
+        systemPrompt: 'You are a competitive intelligence analyst. Always respond with valid JSON only.',
+      });
+      if (result) {
+        usedModel = 'claude-haiku-3.5';
+        result.model = usedModel;
+      }
+    } catch (err) {
+      console.warn('Bedrock Claude failed for competitor intel, falling back to Gemini:', err);
+    }
+  }
+
+  // Fallback to Gemini
+  if (!result) {
+    result = await vertexAI.generateJSON<CompetitorIntel>({
+      prompt,
+      model: 'gemini-2.0-flash',
+      temperature: 0.3,
+      maxOutputTokens: 512,
+    });
+    usedModel = 'gemini-2.0-flash';
+    if (result) result.model = usedModel;
+  }
 
   return result || {
     hasAgency: false,
     confidence: 0,
     signals: ['Unable to analyze'],
     recommendation: 'Proceed with standard outreach',
+    model: 'none',
   };
 }
 

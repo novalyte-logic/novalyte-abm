@@ -8,7 +8,7 @@ set -e
 PROJECT_ID="warp-486714"
 REGION="us-central1"
 SUPABASE_URL="https://zatsxsaetybdyzhxbnnj.supabase.co"
-SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InphdHN4c2FldHliZHl6aHhibm5qIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTczNDU2NTU5NywiZXhwIjoyMDUwMTQxNTk3fQ.Ks-Ks0Ks0Ks0Ks0Ks0Ks0Ks0Ks0Ks0Ks0Ks0Ks0Ks0"
+SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InphdHN4c2FldHliZHl6aHhibm5qIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MDQ2MDExMiwiZXhwIjoyMDg2MDM2MTEyfQ.7tDKpMkqPfjbehLxBRwqng59NhyODA8MltX-LADIC4U"
 
 echo "🚀 Deploying BigQuery ML Pipeline Cloud Functions..."
 echo "Project: $PROJECT_ID"
@@ -20,7 +20,7 @@ echo "📦 Deploying bigquery-sync..."
 cd bigquery-sync
 gcloud functions deploy bigquery-sync \
   --gen2 \
-  --runtime=nodejs18 \
+  --runtime=nodejs20 \
   --region=$REGION \
   --source=. \
   --entry-point=bigquerySyncHandler \
@@ -39,7 +39,7 @@ echo "📦 Deploying bigquery-train..."
 cd bigquery-train
 gcloud functions deploy bigquery-train \
   --gen2 \
-  --runtime=nodejs18 \
+  --runtime=nodejs20 \
   --region=$REGION \
   --source=. \
   --entry-point=bigqueryTrainHandler \
@@ -57,7 +57,7 @@ echo "📦 Deploying bigquery-score..."
 cd bigquery-score
 gcloud functions deploy bigquery-score \
   --gen2 \
-  --runtime=nodejs18 \
+  --runtime=nodejs20 \
   --region=$REGION \
   --source=. \
   --entry-point=bigqueryScoreHandler \

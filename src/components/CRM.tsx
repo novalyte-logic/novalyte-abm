@@ -141,6 +141,23 @@ function CRM() {
   const [competitorIntel, setCompetitorIntel] = useState<CompetitorIntel | null>(null);
   const [competitorLoading, setCompetitorLoading] = useState(false);
   const [attribution, setAttribution] = useState<AttributionReport | null>(null);
+  const [aiImports, setAiImports] = useState<any[]>([]);
+  const [showAiImports, setShowAiImports] = useState(false);
+
+  // Load AI Engine imports from localStorage
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('novalyte_crm_imports');
+      if (raw) setAiImports(JSON.parse(raw));
+    } catch {}
+  }, []);
+
+  const clearAiImports = () => {
+    localStorage.removeItem('novalyte_crm_imports');
+    setAiImports([]);
+    setShowAiImports(false);
+    toast.success('AI imports cleared');
+  };
 
   /* ── Filtering ── */
   const filtered = useMemo(() => contacts.filter(c => {
@@ -417,6 +434,69 @@ function CRM() {
 
         {/* ── Region-grouped table ── */}
         <div className="flex-1 overflow-auto">
+          {/* AI Engine Imports Banner */}
+          {aiImports.length > 0 && (
+            <div className="mx-4 mt-3 mb-1 rounded-xl border border-[#06B6D4]/30 bg-[#06B6D4]/5 overflow-hidden">
+              <button onClick={() => setShowAiImports(!showAiImports)}
+                className="w-full flex items-center gap-3 px-4 py-3 hover:bg-[#06B6D4]/10 transition-colors">
+                <Zap className="w-4 h-4 text-[#06B6D4]" />
+                <span className="text-sm font-semibold text-[#06B6D4]">{aiImports.length} clinics imported from AI Engine</span>
+                <span className="text-[10px] text-slate-500 ml-1">
+                  {aiImports.filter((c: any) => c.tier === 'hot').length} hot · {aiImports.filter((c: any) => c.tier === 'warm').length} warm
+                </span>
+                <div className="ml-auto flex items-center gap-2">
+                  <button onClick={e => { e.stopPropagation(); clearAiImports(); }}
+                    className="text-[10px] text-slate-500 hover:text-red-400 px-2 py-1 rounded hover:bg-red-500/10 transition-colors">Clear</button>
+                  {showAiImports ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+                </div>
+              </button>
+              {showAiImports && (
+                <div className="border-t border-[#06B6D4]/20 max-h-[300px] overflow-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-slate-500 border-b border-white/[0.06] bg-white/[0.02]">
+                        <th className="text-left py-2 px-4 font-medium text-xs">Clinic</th>
+                        <th className="text-left py-2 px-4 font-medium text-xs">Location</th>
+                        <th className="text-left py-2 px-4 font-medium text-xs">Contact</th>
+                        <th className="text-left py-2 px-4 font-medium text-xs">Score</th>
+                        <th className="text-left py-2 px-4 font-medium text-xs">Tier</th>
+                        <th className="text-left py-2 px-4 font-medium text-xs">Imported</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {aiImports.map((imp: any, i: number) => (
+                        <tr key={imp.id || i} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
+                          <td className="py-2 px-4">
+                            <p className="text-slate-200 font-medium text-xs">{imp.name}</p>
+                            {imp.services?.length > 0 && (
+                              <div className="flex gap-1 mt-0.5">{imp.services.slice(0, 2).map((s: string, idx: number) => (
+                                <span key={idx} className="px-1 py-0.5 rounded bg-white/5 text-[9px] text-slate-500">{s}</span>
+                              ))}</div>
+                            )}
+                          </td>
+                          <td className="py-2 px-4 text-slate-400 text-xs">{imp.city}, {imp.state}</td>
+                          <td className="py-2 px-4">
+                            {imp.phone && <p className="text-slate-400 text-[10px]">{imp.phone}</p>}
+                            {imp.email && <p className="text-[#06B6D4] text-[10px] truncate max-w-[150px]">{imp.email}</p>}
+                          </td>
+                          <td className="py-2 px-4">
+                            <span className="text-[#06B6D4] font-bold text-xs">{imp.score ? (imp.score * 100).toFixed(0) + '%' : '—'}</span>
+                          </td>
+                          <td className="py-2 px-4">
+                            <span className={cn('px-2 py-0.5 rounded-full text-[10px] font-semibold',
+                              imp.tier === 'hot' ? 'bg-red-500/20 text-red-400' :
+                              imp.tier === 'warm' ? 'bg-amber-500/20 text-amber-400' :
+                              'bg-slate-500/20 text-slate-400')}>{imp.tier || '—'}</span>
+                          </td>
+                          <td className="py-2 px-4 text-slate-500 text-[10px]">{imp.importedAt ? new Date(imp.importedAt).toLocaleDateString() : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
           {regions.length > 0 ? (
             <div className="pb-4">
               {regions.map(region => {

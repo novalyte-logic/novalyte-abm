@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { Clinic } from '../types';
 import { vertexAI } from './vertexAI';
+import { bedrockService, MODELS } from './bedrockService';
 
 const getEnv = (key: string): string => {
   const metaEnv: any = (typeof import.meta !== 'undefined' && (import.meta as any).env) ? (import.meta as any).env : {};
@@ -338,12 +339,32 @@ Respond ONLY with valid JSON:
 {"people": [{"name": "First Last", "title": "Title", "email": "email@domain.com or null"}]}`;
 
     try {
-      const parsed = await vertexAI.generateJSON<{ people: Array<{ name: string; title?: string; email?: string | null }> }>({
-        prompt,
-        model: 'gemini-2.0-flash',
-        temperature: 0.3,
-        maxOutputTokens: 1024,
-      });
+      // Try Claude Haiku first (fast structured extraction)
+      let parsed: { people: Array<{ name: string; title?: string; email?: string | null }> } | null = null;
+
+      if (bedrockService.isConfigured) {
+        try {
+          parsed = await bedrockService.generateJSON<typeof parsed>({
+            prompt,
+            model: MODELS.CLAUDE_HAIKU,
+            temperature: 0.3,
+            maxTokens: 1024,
+            systemPrompt: 'You are an expert at finding decision makers at medical clinics. Always respond with valid JSON only.',
+          });
+        } catch (err) {
+          console.warn('Bedrock Haiku failed for people extraction, falling back to Gemini:', err);
+        }
+      }
+
+      // Fallback to Gemini
+      if (!parsed) {
+        parsed = await vertexAI.generateJSON<typeof parsed>({
+          prompt,
+          model: 'gemini-2.0-flash',
+          temperature: 0.3,
+          maxOutputTokens: 1024,
+        });
+      }
 
       const foundPeople = parsed?.people || [];
 
