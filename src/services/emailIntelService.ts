@@ -65,10 +65,12 @@ function generatePersonalEmails(firstName: string, lastName: string, domain: str
 export class EmailIntelService {
   private revenueBaseKey: string;
   private exaKey: string;
+  private leadMagicKey: string;
 
   constructor() {
     this.revenueBaseKey = getEnv('VITE_REVENUEBASE_API_KEY');
     this.exaKey = getEnv('VITE_EXA_API_KEY');
+    this.leadMagicKey = getEnv('VITE_LEADMAGIC_API_KEY');
   }
 
   /**
@@ -115,7 +117,84 @@ export class EmailIntelService {
       }
     }
 
-    // Step 3: Generate personal email patterns from found people + clinic domain
+    // Step 3: LeadMagic — find verified work emails for discovered people + discover employees
+    if (this.leadMagicKey) {
+      const domain = clinic.website ? extractDomain(clinic.website) : null;
+
+      // 3a: If we found people, use email-finder to get their verified work emails (1 credit each)
+      if (people.length > 0 && domain) {
+        const existing = new Set(candidates.map(c => c.email.toLowerCase()));
+        for (const person of people.slice(0, 3)) {
+          try {
+            const parts = person.name.trim().split(/\s+/);
+            if (parts.length < 2) continue;
+            const result = await this.leadMagicEmailFinder(parts[0], parts[parts.length - 1], domain, clinic.name);
+            if (result && !existing.has(result.email.toLowerCase())) {
+              candidates.push({
+                email: result.email.toLowerCase(),
+                source: 'exa_scrape', // categorize under existing source type
+                confidence: result.status === 'valid' ? 95 : result.status === 'valid_catch_all' ? 75 : 60,
+                personName: person.name,
+                personTitle: person.title,
+                isGeneric: isGenericEmail(result.email),
+                verified: true,
+                verificationStatus: result.status === 'valid' ? 'valid' : result.status === 'invalid' ? 'invalid' : 'risky',
+                raw: { source: 'leadmagic', ...result },
+              });
+              existing.add(result.email.toLowerCase());
+            }
+          } catch (err) {
+            console.warn('LeadMagic email-finder failed:', err);
+          }
+        }
+      }
+
+      // 3b: If we still have no people or no verified emails, use employee-finder to discover DMs
+      const hasVerifiedPersonal = candidates.some(c => !c.isGeneric && c.verified && c.verificationStatus === 'valid');
+      if (!hasVerifiedPersonal && domain) {
+        try {
+          const employees = await this.leadMagicEmployeeFinder(domain, clinic.name);
+          const existing = new Set(candidates.map(c => c.email.toLowerCase()));
+          // Filter for decision-maker titles
+          const dmTitles = /owner|founder|director|ceo|manager|administrator|partner|president|chief|vp|head/i;
+          const dms = employees.filter(e => dmTitles.test(e.title || ''));
+          const targets = dms.length > 0 ? dms : employees.slice(0, 3);
+
+          for (const emp of targets.slice(0, 3)) {
+            // Add as a discovered person
+            if (!people.some(p => p.name.toLowerCase() === emp.name.toLowerCase())) {
+              people.push({ name: emp.name, title: emp.title || 'Staff', source: 'leadmagic' });
+            }
+            // Now find their email
+            const parts = emp.name.trim().split(/\s+/);
+            if (parts.length < 2) continue;
+            try {
+              const result = await this.leadMagicEmailFinder(parts[0], parts[parts.length - 1], domain, clinic.name);
+              if (result && !existing.has(result.email.toLowerCase())) {
+                candidates.push({
+                  email: result.email.toLowerCase(),
+                  source: 'exa_scrape',
+                  confidence: result.status === 'valid' ? 95 : result.status === 'valid_catch_all' ? 75 : 60,
+                  personName: emp.name,
+                  personTitle: emp.title,
+                  isGeneric: isGenericEmail(result.email),
+                  verified: true,
+                  verificationStatus: result.status === 'valid' ? 'valid' : result.status === 'invalid' ? 'invalid' : 'risky',
+                  raw: { source: 'leadmagic', ...result },
+                });
+                existing.add(result.email.toLowerCase());
+              }
+            } catch (err) {
+              console.warn('LeadMagic email-finder for employee failed:', err);
+            }
+          }
+        } catch (err) {
+          console.warn('LeadMagic employee-finder failed:', err);
+        }
+      }
+    }
+
+    // Step 4: Generate personal email patterns from found people + clinic domain
     const domain = clinic.website ? extractDomain(clinic.website) : null;
     if (domain && people.length > 0) {
       const existing = new Set(candidates.map(c => c.email.toLowerCase()));
@@ -135,7 +214,7 @@ export class EmailIntelService {
       }
     }
 
-    // Step 4: Add generic fallbacks (low priority)
+    // Step 5: Add generic fallbacks (low priority)
     if (domain) {
       const existing = new Set(candidates.map(c => c.email.toLowerCase()));
       const generics = [
@@ -150,7 +229,7 @@ export class EmailIntelService {
       }
     }
 
-    // Step 5: Verify top personal (non-generic) candidates with RevenueBase
+    // Step 6: Verify top personal (non-generic) candidates with RevenueBase
     if (this.revenueBaseKey) {
       const personalCandidates = candidates.filter(c => !c.isGeneric && !isGenericEmail(c.email));
       const toVerify = personalCandidates.slice(0, 6);
@@ -407,6 +486,64 @@ Respond ONLY with valid JSON:
     }
 
     return { people, emails };
+  }
+
+  /**
+   * LeadMagic — find a work email by first name, last name, and company domain
+   * POST https://api.leadmagic.io/v1/people/email-finder
+   * Cost: 1 credit per email found, FREE if not found
+   */
+  private async leadMagicEmailFinder(
+    firstName: string, lastName: string, domain: string, companyName: string
+  ): Promise<{ email: string; status: string; company_name?: string } | null> {
+    try {
+      const response = await axios.post(
+        'https://api.leadmagic.io/v1/people/email-finder',
+        { first_name: firstName, last_name: lastName, domain, company_name: companyName },
+        {
+          headers: { 'X-API-Key': this.leadMagicKey, 'Content-Type': 'application/json' },
+          timeout: 15000,
+        }
+      );
+      const data = response.data;
+      if (data.email && data.status !== 'invalid') {
+        return { email: data.email, status: data.status || 'valid', company_name: data.company_name };
+      }
+      return null;
+    } catch (err: any) {
+      if (err?.response?.status === 404 || err?.response?.status === 422) return null;
+      throw err;
+    }
+  }
+
+  /**
+   * LeadMagic — find employees at a company by domain
+   * POST https://api.leadmagic.io/v1/people/employee-finder
+   * Cost: 0.05 credits per employee returned (20 employees = 1 credit), FREE if none found
+   */
+  private async leadMagicEmployeeFinder(
+    domain: string, companyName: string
+  ): Promise<Array<{ name: string; title: string; profile_url?: string }>> {
+    try {
+      const response = await axios.post(
+        'https://api.leadmagic.io/v1/people/employee-finder',
+        { company_domain: domain, company_name: companyName, limit: 20 },
+        {
+          headers: { 'X-API-Key': this.leadMagicKey, 'Content-Type': 'application/json' },
+          timeout: 15000,
+        }
+      );
+      const data = response.data;
+      const employees = data.data || data.employees || [];
+      return employees.map((e: any) => ({
+        name: e.full_name || `${e.first_name || ''} ${e.last_name || ''}`.trim(),
+        title: e.title || e.job_title || '',
+        profile_url: e.profile_url,
+      })).filter((e: any) => e.name.length > 2);
+    } catch (err: any) {
+      if (err?.response?.status === 404 || err?.response?.status === 422) return [];
+      throw err;
+    }
   }
 
   /**

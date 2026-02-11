@@ -31,16 +31,21 @@ functions.http('bigqueryScoreHandler', async (req, res) => {
     const counts = { hot: 0, warm: 0, cold: 0 };
     countResults.forEach(row => { counts[row.propensity_tier] = Number(row.count); });
     
-    // Get top prospects (hot + warm, deduplicated)
+    // Get top prospects (hot + warm, deduplicated, with duplicate flag)
     const [prospects] = await bq.query(`
-      SELECT clinic_id, name, city, state, phone, email,
-        MAX(propensity_score) as propensity_score, propensity_tier,
-        MAX(affluence_score) as affluence_score, ANY_VALUE(services) as services
-      FROM \`${GCP_PROJECT}.${DATASET}.clinic_scores\`
-      WHERE propensity_tier IN ('hot', 'warm')
-      GROUP BY clinic_id, name, city, state, phone, email, propensity_tier
+      WITH ranked AS (
+        SELECT clinic_id, name, city, state, phone, email,
+          MAX(propensity_score) as propensity_score, propensity_tier,
+          MAX(affluence_score) as affluence_score, ANY_VALUE(services) as services,
+          COUNT(*) as dupe_count
+        FROM \`${GCP_PROJECT}.${DATASET}.clinic_scores\`
+        WHERE propensity_tier IN ('hot', 'warm')
+        GROUP BY clinic_id, name, city, state, phone, email, propensity_tier
+      )
+      SELECT *, (dupe_count > 1) as is_duplicate
+      FROM ranked
       ORDER BY propensity_score DESC
-      LIMIT 50
+      LIMIT 200
     `);
     
     console.log(`Found ${prospects.length} top prospects (${counts.hot} hot, ${counts.warm} warm, ${counts.cold} cold)`);
@@ -61,6 +66,7 @@ functions.http('bigqueryScoreHandler', async (req, res) => {
         propensity_tier: p.propensity_tier,
         affluence_score: Number(p.affluence_score) || 0,
         services: p.services || [],
+        is_duplicate: p.is_duplicate || false,
       })),
     });
   } catch (error) {

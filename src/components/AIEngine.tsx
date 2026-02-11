@@ -4,7 +4,7 @@ import {
   Activity, Target, Network, Gauge, Filter,
   Play, Settings, Clock, Users, ChevronDown, ChevronRight,
   Phone, Mail, X, Zap, Sparkles, Search, Send,
-  ArrowRight, Square, CheckSquare, ExternalLink
+  ArrowRight, Square, CheckSquare, ExternalLink, Copy
 } from 'lucide-react';
 import { cn } from '../utils/cn';
 import toast from 'react-hot-toast';
@@ -54,7 +54,6 @@ function saveState(state: SavedState) {
 }
 
 // ─── Gas Pump Analog Rolling Digit ───
-// White digits on black, mechanical rolling feel like old gas station pumps
 function PumpDigit({ digit, rolling }: { digit: string; rolling: boolean }) {
   const [displayDigit, setDisplayDigit] = useState(0);
   const intervalRef = useRef<any>(null);
@@ -89,7 +88,6 @@ function PumpDigit({ digit, rolling }: { digit: string; rolling: boolean }) {
       }}>
         {rolling ? displayDigit : digit}
       </span>
-      {/* Mechanical line across middle */}
       <div className="absolute left-0 right-0 top-1/2 h-px bg-white/5" />
     </span>
   );
@@ -241,6 +239,108 @@ function PipelineNode({
   );
 }
 
+// ─── Metric Drill-Down Modal ───
+function MetricDrillDown({
+  title, subtitle, data, columns, onClose,
+}: {
+  title: string; subtitle: string; data: any[]; columns: { key: string; label: string; render?: (row: any) => React.ReactNode }[];
+  onClose: () => void;
+}) {
+  const [search, setSearch] = useState('');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const filtered = data.filter(row => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return Object.values(row).some(v => String(v || '').toLowerCase().includes(q));
+  });
+
+  const toggle = (id: string) => setSelected(prev => {
+    const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next;
+  });
+  const selectAll = () => {
+    if (selected.size === filtered.length) setSelected(new Set());
+    else setSelected(new Set(filtered.map((r: any) => r.clinic_id || r.id || String(Math.random()))));
+  };
+
+  const pushToCRM = () => {
+    if (selected.size === 0) { toast.error('Select items first'); return; }
+    const sel = data.filter(r => selected.has(r.clinic_id || r.id));
+    try {
+      const existing = JSON.parse(localStorage.getItem('novalyte_crm_imports') || '[]');
+      const newImports = sel.map(p => ({
+        id: p.clinic_id || p.id, name: p.name, city: p.city, state: p.state,
+        phone: p.phone, email: p.email, score: p.propensity_score || 0,
+        tier: p.propensity_tier || 'cold', affluence: p.affluence_score,
+        services: p.services, importedAt: new Date().toISOString(), source: 'ai-engine-drilldown',
+      }));
+      const merged = [...newImports, ...existing.filter((e: any) => !selected.has(e.id))];
+      localStorage.setItem('novalyte_crm_imports', JSON.stringify(merged.slice(0, 500)));
+      toast.success(`${sel.length} pushed to Pipeline CRM`);
+      setSelected(new Set());
+    } catch { toast.error('Failed to push to CRM'); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" onClick={onClose}>
+      <div className="glass-card w-full max-w-5xl max-h-[85vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-white/[0.06] bg-[#06B6D4]/5 shrink-0">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h3 className="text-lg font-bold text-white">{title}</h3>
+              <p className="text-xs text-slate-500 mt-0.5">{subtitle} · {filtered.length} results</p>
+            </div>
+            <button onClick={onClose} className="text-slate-500 hover:text-slate-300"><X className="w-5 h-5" /></button>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {selected.size > 0 && (
+              <button onClick={pushToCRM} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-400 text-xs font-semibold hover:bg-emerald-500/30 border border-emerald-500/30">
+                <ExternalLink className="w-3.5 h-3.5" /> Push {selected.size} to CRM
+              </button>
+            )}
+            <input type="text" placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)}
+              className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-slate-200 text-xs placeholder-slate-500 w-48 ml-auto" />
+          </div>
+        </div>
+        <div className="flex-1 overflow-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="text-slate-500 border-b border-white/[0.06] bg-white/[0.02] sticky top-0 z-10">
+                <th className="py-2.5 px-3 w-10"><button onClick={selectAll} className="text-slate-500 hover:text-[#06B6D4]">
+                  {selected.size === filtered.length && filtered.length > 0 ? <CheckSquare className="w-4 h-4 text-[#06B6D4]" /> : <Square className="w-4 h-4" />}
+                </button></th>
+                {columns.map(col => (
+                  <th key={col.key} className="text-left py-2.5 px-3 font-medium text-xs">{col.label}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((row, i) => (
+                <tr key={row.clinic_id || row.id || i} className={cn('border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors',
+                  selected.has(row.clinic_id || row.id) && 'bg-[#06B6D4]/5')}>
+                  <td className="py-2.5 px-3">
+                    <button onClick={() => toggle(row.clinic_id || row.id)} className="text-slate-500 hover:text-[#06B6D4]">
+                      {selected.has(row.clinic_id || row.id) ? <CheckSquare className="w-4 h-4 text-[#06B6D4]" /> : <Square className="w-4 h-4" />}
+                    </button>
+                  </td>
+                  {columns.map(col => (
+                    <td key={col.key} className="py-2.5 px-3 text-sm text-slate-300">
+                      {col.render ? col.render(row) : row[col.key] ?? '—'}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+              {filtered.length === 0 && (
+                <tr><td colSpan={columns.length + 1} className="py-8 text-center text-xs text-slate-500">No results</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function AIEngine() {
   const saved = useRef(loadState());
   const [status, setStatus] = useState<PipelineStatus>({ step: 'idle', message: 'Ready to run intelligence pipeline', progress: 0 });
@@ -255,7 +355,7 @@ export default function AIEngine() {
   const [selectedProspect, setSelectedProspect] = useState<any>(null);
   const [liveNumbers, setLiveNumbers] = useState(saved.current?.liveNumbers || { clinics: 0, leads: 0, accuracy: 0, hot: 0, warm: 0, cold: 0, enriched: 0 });
   const [pumpRolling, setPumpRolling] = useState(false);
-  const [pumpScores, setPumpScores] = useState<number[]>([]);
+  const [pumpScore, setPumpScore] = useState<number>(0);
   const [addingToSequence, setAddingToSequence] = useState(false);
   const [sequenceProgress, setSequenceProgress] = useState({ sent: 0, total: 0, model: '' });
   const [expandedNodes, setExpandedNodes] = useState<Record<string, boolean>>(saved.current?.expandedNodes || {});
@@ -264,6 +364,7 @@ export default function AIEngine() {
   const [filterEmail, setFilterEmail] = useState<'all' | 'with_email' | 'no_email'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [pushingToCRM, setPushingToCRM] = useState(false);
+  const [metricDrill, setMetricDrill] = useState<{ title: string; subtitle: string; data: any[]; columns: any[] } | null>(null);
 
   // Persist state
   const persistState = useCallback(() => {
@@ -305,12 +406,75 @@ export default function AIEngine() {
     }
   };
 
+  // ─── Metric card click handlers ───
+  const defaultColumns = [
+    { key: 'name', label: 'Clinic', render: (r: any) => <span className="font-medium text-slate-200">{r.name}</span> },
+    { key: 'location', label: 'Location', render: (r: any) => <span className="text-slate-400 text-xs">{r.city}, {r.state}</span> },
+    { key: 'contact', label: 'Contact', render: (r: any) => (
+      <div>
+        {r.phone && <div className="text-slate-300 text-[10px] flex items-center gap-1"><Phone className="w-3 h-3" />{r.phone}</div>}
+        {r.email && <div className="text-[#06B6D4] text-[10px] truncate max-w-[160px] flex items-center gap-1"><Mail className="w-3 h-3" />{r.email}</div>}
+        {!r.phone && !r.email && <span className="text-slate-600 text-[10px]">—</span>}
+      </div>
+    )},
+    { key: 'score', label: 'Lead Score', render: (r: any) => (
+      <div className="flex items-center gap-2">
+        <div className="w-12 h-1.5 bg-white/5 rounded-full overflow-hidden">
+          <div className={cn('h-full rounded-full', r.propensity_score >= 0.7 ? 'bg-red-500' : r.propensity_score >= 0.4 ? 'bg-amber-500' : 'bg-slate-500')}
+            style={{ width: `${(r.propensity_score || 0) * 100}%` }} />
+        </div>
+        <span className="text-xs font-bold text-slate-300 tabular-nums">{((r.propensity_score || 0) * 100).toFixed(0)}%</span>
+      </div>
+    )},
+    { key: 'tier', label: 'Tier', render: (r: any) => (
+      <span className={cn('px-2 py-0.5 rounded-full text-[10px] font-semibold',
+        r.propensity_tier === 'hot' ? 'bg-red-500/20 text-red-400 border border-red-500/30' :
+        r.propensity_tier === 'warm' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' :
+        'bg-slate-500/20 text-slate-400 border border-slate-500/30')}>{r.propensity_tier}</span>
+    )},
+  ];
+
+  const openMetricDrill = (metric: string) => {
+    if (topProspects.length === 0) { toast.error('Run the pipeline first'); return; }
+    switch (metric) {
+      case 'clinics':
+        setMetricDrill({ title: `Clinics Synced — ${liveNumbers.clinics.toLocaleString()}`, subtitle: 'All clinics synced from Supabase → BigQuery', data: topProspects, columns: defaultColumns });
+        break;
+      case 'leads':
+        setMetricDrill({ title: `Leads Synced — ${liveNumbers.leads.toLocaleString()}`, subtitle: 'Patient leads synced to BigQuery', data: topProspects, columns: defaultColumns });
+        break;
+      case 'enriched':
+        setMetricDrill({ title: `DMs Enriched — ${liveNumbers.enriched.toLocaleString()}`, subtitle: 'Decision makers with verified emails via Apollo + Exa + Bedrock',
+          data: topProspects.filter(p => p.email), columns: defaultColumns });
+        break;
+      case 'accuracy':
+        setMetricDrill({ title: `Model Accuracy — ${(liveNumbers.accuracy * 100).toFixed(1)}%`, subtitle: 'Dynamic accuracy computed from BigQuery score distribution, data completeness, and dataset size',
+          data: pipelineHistory.filter(h => h.status === 'success'),
+          columns: [
+            { key: 'timestamp', label: 'Run Time', render: (r: any) => <span className="text-slate-300 text-xs">{new Date(r.timestamp).toLocaleString()}</span> },
+            { key: 'accuracy', label: 'Accuracy', render: (r: any) => <span className="text-[#06B6D4] font-bold text-sm">{(r.accuracy * 100).toFixed(1)}%</span> },
+            { key: 'clinics', label: 'Clinics', render: (r: any) => <span className="text-slate-300 text-xs">{r.clinics?.toLocaleString()}</span> },
+            { key: 'hotProspects', label: 'Hot Leads', render: (r: any) => <span className="text-red-400 text-xs font-semibold">{r.hotProspects}</span> },
+            { key: 'duration', label: 'Duration', render: (r: any) => <span className="text-slate-400 text-xs">{r.duration}s</span> },
+          ] });
+        break;
+      case 'hot':
+        setMetricDrill({ title: `Hot Leads — ${liveNumbers.hot.toLocaleString()}`, subtitle: 'Lead score ≥ 70% — Priority outreach targets',
+          data: topProspects.filter(p => p.propensity_tier === 'hot'), columns: defaultColumns });
+        break;
+      case 'warm':
+        setMetricDrill({ title: `Warm Leads — ${liveNumbers.warm.toLocaleString()}`, subtitle: 'Lead score 40-69% — Nurture sequence candidates',
+          data: topProspects.filter(p => p.propensity_tier === 'warm'), columns: defaultColumns });
+        break;
+    }
+  };
+
   // ═══ 11-SECOND TIMED PIPELINE ═══
   const runPipeline = async () => {
     const startTime = Date.now();
     setLiveNumbers({ clinics: 0, leads: 0, accuracy: 0, hot: 0, warm: 0, cold: 0, enriched: 0 });
     setPumpRolling(true);
-    setPumpScores([]);
+    setPumpScore(0);
     setSelectedClinics(new Set());
     setStatus({ step: 'syncing', message: 'Syncing Supabase → BigQuery...', progress: 5 });
 
@@ -358,10 +522,10 @@ export default function AIEngine() {
         setStatus(prev => ({ ...prev, progress: 68 + Math.round(27 * (i / 10)) }));
       }
 
-      // Step 5: REVEAL (10.5s → 11s)
+      // Step 5: REVEAL (10.5s → 11s) — single top score
       await waitUntil(startTime, 10500);
-      const scores = (scoreData.topProspects || []).slice(0, 8).map((p: any) => p.propensity_score);
-      setPumpScores(scores);
+      const topScore = (scoreData.topProspects || []).length > 0 ? scoreData.topProspects[0].propensity_score : 0;
+      setPumpScore(topScore);
       setPumpRolling(false);
       await waitUntil(startTime, 11000);
 
@@ -391,8 +555,6 @@ export default function AIEngine() {
 
     for (const prospect of targets) {
       try {
-        // Call Bedrock to personalize each email
-        // Build personalized email with clinic-specific data
         const greeting = prospect.name ? `the team at ${prospect.name}` : 'there';
         const location = `${prospect.city}, ${prospect.state}`;
         const scoreLabel = prospect.propensity_score >= 0.7 ? 'high-demand' : 'growing';
@@ -432,7 +594,6 @@ export default function AIEngine() {
     if (selectedClinics.size === 0) { toast.error('Select clinics first'); return; }
     setPushingToCRM(true);
     const selected = topProspects.filter(p => selectedClinics.has(p.clinic_id));
-    // Store in localStorage for CRM to pick up
     try {
       const existing = JSON.parse(localStorage.getItem('novalyte_crm_imports') || '[]');
       const newImports = selected.map(p => ({
@@ -453,8 +614,8 @@ export default function AIEngine() {
 
   const exportProspects = () => {
     if (!filteredProspects.length) { toast.error('No prospects to export.'); return; }
-    const csv = ['name,city,state,phone,email,lead_score,tier,affluence,services',
-      ...filteredProspects.map(p => [p.name, p.city, p.state, p.phone || '', p.email || '', p.propensity_score, p.propensity_tier, p.affluence_score, (p.services || []).join('; ')].map(v => String(v).includes(',') ? `"${v}"` : v).join(','))
+    const csv = ['name,city,state,phone,email,lead_score,tier,affluence,services,is_duplicate',
+      ...filteredProspects.map(p => [p.name, p.city, p.state, p.phone || '', p.email || '', p.propensity_score, p.propensity_tier, p.affluence_score, (p.services || []).join('; '), p.is_duplicate ? 'YES' : ''].map(v => String(v).includes(',') ? `"${v}"` : v).join(','))
     ].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
@@ -479,6 +640,9 @@ export default function AIEngine() {
         .animate-fade-in { animation: fadeIn 0.3s ease-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
       `}</style>
+
+      {/* Metric Drill-Down Modal */}
+      {metricDrill && <MetricDrillDown {...metricDrill} onClose={() => setMetricDrill(null)} />}
 
       {/* ═══ Hero Header ═══ */}
       <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#06B6D4]/10 via-black to-[#06B6D4]/5 border border-[#06B6D4]/20 p-8">
@@ -551,7 +715,6 @@ export default function AIEngine() {
               <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">LLM Stack</h4>
               <div className="space-y-2 text-xs">
                 <div className="flex justify-between"><span className="text-slate-500">Email Personalization</span><span className="text-[#06B6D4]">Claude Opus 4.6</span></div>
-                <div className="flex justify-between"><span className="text-slate-500">DM Enrichment</span><span className="text-[#06B6D4]">Claude Haiku 3.5</span></div>
                 <div className="flex justify-between"><span className="text-slate-500">Competitor Intel</span><span className="text-[#06B6D4]">Claude Haiku 3.5</span></div>
                 <div className="flex justify-between"><span className="text-slate-500">Scoring Model</span><span className="text-emerald-400">BigQuery ML</span></div>
                 <div className="flex justify-between"><span className="text-slate-500">Fallback</span><span className="text-amber-400">Gemini 2.0 Flash</span></div>
@@ -631,28 +794,29 @@ export default function AIEngine() {
           </PipelineNode>
         </div>
 
-        {/* ═══ GAS PUMP LEAD SCORES ═══ */}
-        {(pumpRolling || pumpScores.length > 0) && (
+        {/* ═══ SINGLE GAS PUMP LEAD SCORE ═══ */}
+        {(pumpRolling || pumpScore > 0) && (
           <div className="mt-6 pt-4 border-t border-white/[0.06]">
             <div className="flex items-center gap-2 mb-3">
               <Sparkles className="w-4 h-4 text-[#06B6D4]" />
-              <span className="text-sm font-medium text-slate-300">Lead Score Calculation</span>
+              <span className="text-sm font-medium text-slate-300">Top Lead Score</span>
               {pumpRolling && <span className="text-xs text-[#06B6D4] animate-pulse">CALCULATING...</span>}
             </div>
-            <div className="flex gap-3 flex-wrap">
-              {(pumpRolling ? [0,0,0,0,0,0,0,0] : pumpScores).map((score, i) => (
-                <div key={i} className={cn('relative px-3 py-3 rounded-xl border text-center min-w-[80px] transition-all duration-500 bg-black',
-                  pumpRolling ? 'border-[#06B6D4]/40' :
-                  score >= 0.7 ? 'border-red-500/40' : score >= 0.4 ? 'border-amber-500/40' : 'border-slate-500/40')}>
-                  <div className="text-xl"><GasPumpNumber value={score * 100} rolling={pumpRolling} suffix="%" /></div>
-                  {!pumpRolling && (
-                    <div className={cn('text-[10px] font-semibold mt-1',
-                      score >= 0.7 ? 'text-red-400' : score >= 0.4 ? 'text-amber-400' : 'text-slate-400')}>
-                      {score >= 0.7 ? 'HOT' : score >= 0.4 ? 'WARM' : 'COLD'}
-                    </div>
-                  )}
-                </div>
-              ))}
+            <div className="flex gap-3 items-center">
+              <div className={cn('relative px-5 py-4 rounded-xl border text-center min-w-[120px] transition-all duration-500 bg-black',
+                pumpRolling ? 'border-[#06B6D4]/40' :
+                pumpScore >= 0.7 ? 'border-red-500/40' : pumpScore >= 0.4 ? 'border-amber-500/40' : 'border-slate-500/40')}>
+                <div className="text-2xl"><GasPumpNumber value={pumpScore * 100} rolling={pumpRolling} suffix="%" /></div>
+                {!pumpRolling && (
+                  <div className={cn('text-[10px] font-semibold mt-1',
+                    pumpScore >= 0.7 ? 'text-red-400' : pumpScore >= 0.4 ? 'text-amber-400' : 'text-slate-400')}>
+                    {pumpScore >= 0.7 ? 'HOT' : pumpScore >= 0.4 ? 'WARM' : 'COLD'}
+                  </div>
+                )}
+              </div>
+              {!pumpRolling && pumpScore > 0 && (
+                <p className="text-xs text-slate-500">Highest scoring prospect in this pipeline run</p>
+              )}
             </div>
           </div>
         )}
@@ -675,29 +839,31 @@ export default function AIEngine() {
         )}
       </div>
 
-      {/* ═══ LIVE METRICS ═══ */}
+      {/* ═══ LIVE METRICS — CLICKABLE ═══ */}
       {status.step !== 'idle' && (
         <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
           {[
-            { icon: Database, label: 'Clinics Synced', value: liveNumbers.clinics, color: '#06B6D4' },
-            { icon: Zap, label: 'Leads Synced', value: liveNumbers.leads, color: '#06B6D4' },
-            { icon: Users, label: 'DMs Enriched', value: liveNumbers.enriched, color: '#10B981' },
-            { icon: Gauge, label: 'Accuracy', value: liveNumbers.accuracy, color: '#06B6D4' },
-            { icon: Target, label: 'Hot Leads', value: liveNumbers.hot, color: '#EF4444' },
-            { icon: Activity, label: 'Warm Leads', value: liveNumbers.warm, color: '#F59E0B' },
+            { icon: Database, label: 'Clinics Synced', value: liveNumbers.clinics, color: '#06B6D4', metric: 'clinics' },
+            { icon: Zap, label: 'Leads Synced', value: liveNumbers.leads, color: '#06B6D4', metric: 'leads' },
+            { icon: Users, label: 'DMs Enriched', value: liveNumbers.enriched, color: '#10B981', metric: 'enriched' },
+            { icon: Gauge, label: 'Accuracy', value: liveNumbers.accuracy, color: '#06B6D4', metric: 'accuracy' },
+            { icon: Target, label: 'Hot Leads', value: liveNumbers.hot, color: '#EF4444', metric: 'hot' },
+            { icon: Activity, label: 'Warm Leads', value: liveNumbers.warm, color: '#F59E0B', metric: 'warm' },
           ].map((m, i) => (
-            <div key={i} className="glass-card p-4 relative overflow-hidden group">
-              <div className="absolute -top-4 -right-4 w-20 h-20 rounded-full blur-2xl transition-all" style={{ backgroundColor: `${m.color}15` }} />
+            <div key={i} onClick={() => openMetricDrill(m.metric)}
+              className="glass-card p-4 relative overflow-hidden group cursor-pointer hover:border-[#06B6D4]/30 hover:bg-white/[0.03] transition-all">
+              <div className="absolute -top-4 -right-4 w-20 h-20 rounded-full blur-2xl transition-all group-hover:scale-125" style={{ backgroundColor: `${m.color}15` }} />
               <div className="relative">
                 <div className="flex items-center gap-2 mb-1"><m.icon className="w-3.5 h-3.5" style={{ color: m.color }} /><span className="text-[10px] text-slate-500 uppercase tracking-wider">{m.label}</span></div>
                 <p className="text-2xl font-bold text-white tabular-nums"><AnimatedNumber value={m.value} /></p>
+                <p className="text-[9px] text-slate-600 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">Click to drill down →</p>
               </div>
             </div>
           ))}
         </div>
       )}
 
-      {/* ═══ PROSPECTS TABLE WITH FILTERS + ACTIONS ═══ */}
+      {/* ═══ PROSPECTS TABLE WITH FILTERS + ACTIONS + DUPLICATE BADGES ═══ */}
       {topProspects.length > 0 && (
         <div className="glass-card overflow-hidden">
           {/* Header with actions */}
@@ -800,7 +966,14 @@ export default function AIEngine() {
                         i < 3 ? 'bg-[#06B6D4] text-black' : i < 10 ? 'bg-[#06B6D4]/20 text-[#06B6D4]' : 'bg-white/5 text-slate-500')}>{i + 1}</div>
                     </td>
                     <td className="py-3 px-3">
-                      <div className="text-slate-200 font-medium text-sm">{p.name}</div>
+                      <div className="flex items-center gap-2">
+                        <div className="text-slate-200 font-medium text-sm">{p.name}</div>
+                        {p.is_duplicate && (
+                          <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 text-[9px] font-semibold border border-amber-500/30 flex items-center gap-0.5">
+                            <Copy className="w-2.5 h-2.5" /> DUP
+                          </span>
+                        )}
+                      </div>
                       <div className="flex gap-1 mt-1 flex-wrap">
                         {(p.services || []).slice(0, 2).map((s: string, idx: number) => (
                           <span key={idx} className="px-1.5 py-0.5 rounded bg-white/5 text-[10px] text-slate-400">{s}</span>
@@ -872,7 +1045,14 @@ export default function AIEngine() {
           <div className="glass-card p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="flex items-start justify-between mb-6">
               <div>
-                <h3 className="text-xl font-bold text-white">{selectedProspect.name}</h3>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-xl font-bold text-white">{selectedProspect.name}</h3>
+                  {selectedProspect.is_duplicate && (
+                    <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 text-[10px] font-semibold border border-amber-500/30 flex items-center gap-0.5">
+                      <Copy className="w-3 h-3" /> DUPLICATE
+                    </span>
+                  )}
+                </div>
                 <p className="text-sm text-slate-400 mt-1">{selectedProspect.city}, {selectedProspect.state}</p>
               </div>
               <button onClick={() => setSelectedProspect(null)} className="text-slate-500 hover:text-slate-300"><X className="w-5 h-5" /></button>
