@@ -365,6 +365,9 @@ export default function AIEngine() {
   const [searchQuery, setSearchQuery] = useState('');
   const [pushingToCRM, setPushingToCRM] = useState(false);
   const [metricDrill, setMetricDrill] = useState<{ title: string; subtitle: string; data: any[]; columns: any[] } | null>(null);
+  const [dripSequences, setDripSequences] = useState<any[]>(() => {
+    try { return JSON.parse(localStorage.getItem('novalyte_drip_sequences') || '[]'); } catch { return []; }
+  });
 
   // Persist state
   const persistState = useCallback(() => {
@@ -402,7 +405,8 @@ export default function AIEngine() {
     if (selectedClinics.size === filteredProspects.length) {
       setSelectedClinics(new Set());
     } else {
-      setSelectedClinics(new Set(filteredProspects.map(p => p.clinic_id)));
+      // Cap at 100 for drip sequence
+      setSelectedClinics(new Set(filteredProspects.slice(0, 100).map(p => p.clinic_id)));
     }
   };
 
@@ -543,17 +547,43 @@ export default function AIEngine() {
     }
   };
 
-  // ═══ ADD TO SEQUENCE WITH BEDROCK AUTO-PERSONALIZATION ═══
+  // ═══ ADD TO 5-DAY DRIP SEQUENCE ═══
   const addToSequenceWithAI = async () => {
-    const withEmail = topProspects.filter(p => p.email);
-    const targets = withEmail.slice(0, 100);
-    if (targets.length === 0) { toast.error('No prospects with emails found.'); return; }
+    // Use selected clinics if any, otherwise top prospects with email
+    const pool = selectedClinics.size > 0
+      ? topProspects.filter(p => selectedClinics.has(p.clinic_id) && p.email)
+      : topProspects.filter(p => p.email);
+    const targets = pool.slice(0, 100);
+    if (targets.length === 0) { toast.error('No prospects with emails found. Select clinics with emails or run the pipeline.'); return; }
 
+    // Split into 5 days (~20 per day)
+    const perDay = Math.ceil(targets.length / 5);
+    const days: any[][] = [];
+    for (let d = 0; d < 5; d++) {
+      days.push(targets.slice(d * perDay, (d + 1) * perDay));
+    }
+
+    // Save sequence schedule to localStorage
+    const sequenceId = `seq_${Date.now()}`;
+    const schedule = days.map((batch, dayIdx) => ({
+      day: dayIdx + 1,
+      sendDate: new Date(Date.now() + dayIdx * 86400000).toISOString().slice(0, 10),
+      clinics: batch.map(p => ({ clinic_id: p.clinic_id, name: p.name, email: p.email, city: p.city, state: p.state, tier: p.propensity_tier, score: p.propensity_score, services: p.services })),
+      status: dayIdx === 0 ? 'sending' : 'scheduled',
+      sent: 0,
+    }));
+
+    // Store the full sequence
+    const sequences = JSON.parse(localStorage.getItem('novalyte_drip_sequences') || '[]');
+    sequences.unshift({ id: sequenceId, createdAt: new Date().toISOString(), totalClinics: targets.length, schedule });
+    localStorage.setItem('novalyte_drip_sequences', JSON.stringify(sequences.slice(0, 10)));
+
+    // Send Day 1 now, rest are scheduled
     setAddingToSequence(true);
-    setSequenceProgress({ sent: 0, total: targets.length, model: 'claude-opus-4.6' });
+    setSequenceProgress({ sent: 0, total: days[0].length, model: 'Day 1 of 5' });
     let sent = 0, failed = 0;
 
-    for (const prospect of targets) {
+    for (const prospect of days[0]) {
       try {
         const greeting = prospect.name ? `the team at ${prospect.name}` : 'there';
         const location = `${prospect.city}, ${prospect.state}`;
@@ -575,7 +605,7 @@ export default function AIEngine() {
           body: JSON.stringify({
             to: prospect.email, from: 'Novalyte AI <noreply@novalyte.io>',
             subject, html, reply_to: 'admin@novalyte.io',
-            tags: [{ name: 'source', value: 'ai-engine' }, { name: 'clinic', value: (prospect.name || '').slice(0, 256) }, { name: 'tier', value: prospect.propensity_tier }],
+            tags: [{ name: 'source', value: 'ai-engine-drip' }, { name: 'clinic', value: (prospect.name || '').slice(0, 256) }, { name: 'tier', value: prospect.propensity_tier }, { name: 'day', value: '1' }],
           }),
         });
         sent++;
@@ -584,8 +614,16 @@ export default function AIEngine() {
       } catch { failed++; }
     }
 
+    // Update schedule status
+    schedule[0].status = 'sent';
+    schedule[0].sent = sent;
+    sequences[0].schedule = schedule;
+    localStorage.setItem('novalyte_drip_sequences', JSON.stringify(sequences));
+
     setAddingToSequence(false);
-    if (sent > 0) toast.success(`Sent ${sent} personalized emails${failed > 0 ? ` (${failed} failed)` : ''}`);
+    setDripSequences(JSON.parse(localStorage.getItem('novalyte_drip_sequences') || '[]'));
+    const remaining = targets.length - days[0].length;
+    if (sent > 0) toast.success(`Day 1: Sent ${sent} emails${failed > 0 ? ` (${failed} failed)` : ''}. ${remaining} more scheduled over next 4 days.`);
     else toast.error('Failed to send. Check Resend config.');
   };
 
@@ -888,8 +926,8 @@ export default function AIEngine() {
                   className={cn('flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all',
                     addingToSequence ? 'bg-white/5 text-slate-500' :
                     emailProspectCount > 0 ? 'bg-[#06B6D4] text-black hover:bg-[#22D3EE]' : 'bg-white/5 text-slate-500 cursor-not-allowed')}>
-                  {addingToSequence ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> {sequenceProgress.sent}/{sequenceProgress.total}</> :
-                    <><Send className="w-3.5 h-3.5" /> Add Top {Math.min(emailProspectCount, 100)} to Sequence</>}
+                  {addingToSequence ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> {sequenceProgress.sent}/{sequenceProgress.total} ({sequenceProgress.model})</> :
+                    <><Send className="w-3.5 h-3.5" /> {selectedClinics.size > 0 ? `Drip ${Math.min(selectedClinics.size, 100)} over 5 Days` : `Drip Top ${Math.min(emailProspectCount, 100)} over 5 Days`}</>}
                 </button>
                 <button onClick={exportProspects} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-xs font-medium transition-all">
                   <Download className="w-3.5 h-3.5" /> CSV
@@ -1015,6 +1053,43 @@ export default function AIEngine() {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* ═══ 5-Day Drip Sequence Schedule ═══ */}
+      {dripSequences.length > 0 && (
+        <div className="glass-card p-6">
+          <h3 className="text-lg font-semibold text-slate-200 flex items-center gap-2 mb-4">
+            <Mail className="w-5 h-5 text-[#06B6D4]" /> Drip Sequences
+            <span className="text-xs text-slate-500 font-normal">{dripSequences.length} sequence{dripSequences.length > 1 ? 's' : ''}</span>
+          </h3>
+          {dripSequences.slice(0, 3).map((seq: any, si: number) => (
+            <div key={seq.id || si} className="mb-4 last:mb-0 p-4 rounded-xl bg-white/[0.02] border border-white/[0.06]">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <p className="text-sm font-medium text-slate-300">{seq.totalClinics} clinics · 5-day drip</p>
+                  <p className="text-[10px] text-slate-500">Created {new Date(seq.createdAt).toLocaleString()}</p>
+                </div>
+              </div>
+              <div className="grid grid-cols-5 gap-2">
+                {(seq.schedule || []).map((day: any, di: number) => (
+                  <div key={di} className={cn('p-2.5 rounded-lg border text-center transition-all',
+                    day.status === 'sent' ? 'bg-emerald-500/10 border-emerald-500/30' :
+                    day.status === 'sending' ? 'bg-[#06B6D4]/10 border-[#06B6D4]/30 animate-pulse' :
+                    'bg-white/[0.02] border-white/[0.06]')}>
+                    <p className="text-[10px] text-slate-500 mb-1">Day {day.day}</p>
+                    <p className="text-sm font-bold text-slate-200">{day.clinics?.length || 0}</p>
+                    <p className="text-[9px] mt-1">{day.sendDate}</p>
+                    <span className={cn('text-[9px] font-semibold mt-1 inline-block',
+                      day.status === 'sent' ? 'text-emerald-400' :
+                      day.status === 'sending' ? 'text-[#06B6D4]' : 'text-slate-500')}>
+                      {day.status === 'sent' ? `✓ ${day.sent} sent` : day.status === 'sending' ? 'Sending...' : 'Scheduled'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 

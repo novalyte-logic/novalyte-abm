@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
   LayoutDashboard, TrendingUp, Building2, Users, Phone,
   Settings, Cloud, CloudOff, RefreshCw, Brain, ChevronLeft,
   ChevronRight, DownloadCloud, Trash2, Sparkles, Mail, DollarSign,
-  Menu, X, UserCheck, Lock, Eye, EyeOff, BarChart3,
+  Menu, X, UserCheck, Lock, Eye, EyeOff, BarChart3, ArrowRight,
 } from 'lucide-react';
+import { startSession, trackPageView, trackAction, setupSessionFlush, getCurrentSession, type SessionInfo } from './services/sessionTracker';
 import { useAppStore } from './stores/appStore';
 import { cn } from './utils/cn';
 import Dashboard from './components/Dashboard';
@@ -31,21 +32,29 @@ const navItems = [
   { id: 'voice', label: 'Voice Agent', shortLabel: 'Voice', icon: Phone, badge: 'calls' },
 ] as const;
 
-const ACCESS_CODE = '2104';
+const ADMIN_CODE = '1459';
+const GUEST_CODE = '2104';
 
-function LoginScreen({ onAuth }: { onAuth: () => void }) {
+function LoginScreen({ onAuth }: { onAuth: (session: SessionInfo) => void }) {
   const [code, setCode] = useState('');
   const [error, setError] = useState(false);
   const [showCode, setShowCode] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState<'code' | 'name'>('code');
+  const [guestName, setGuestName] = useState('');
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleCodeSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    setTimeout(() => {
-      if (code === ACCESS_CODE) {
+    setTimeout(async () => {
+      if (code === ADMIN_CODE) {
+        // Admin — direct access, no name prompt
+        const session = await startSession('admin', code, 'Jamil');
         sessionStorage.setItem('novalyte-auth', 'true');
-        onAuth();
+        onAuth(session);
+      } else if (code === GUEST_CODE) {
+        // YC Guest — ask for name first
+        setStep('name');
       } else {
         setError(true);
         setCode('');
@@ -53,6 +62,16 @@ function LoginScreen({ onAuth }: { onAuth: () => void }) {
       }
       setLoading(false);
     }, 400);
+  };
+
+  const handleNameSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!guestName.trim()) return;
+    setLoading(true);
+    const session = await startSession('guest', GUEST_CODE, guestName.trim());
+    sessionStorage.setItem('novalyte-auth', 'true');
+    onAuth(session);
+    setLoading(false);
   };
 
   return (
@@ -70,40 +89,62 @@ function LoginScreen({ onAuth }: { onAuth: () => void }) {
           <p className="text-xs text-slate-500 mt-1">AI Intelligence Engine · Restricted Access</p>
         </div>
 
-        {/* Login Form */}
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="glass-card p-6 space-y-4">
-            <div className="flex items-center gap-2 mb-2">
-              <Lock className="w-4 h-4 text-novalyte-400" />
-              <span className="text-sm font-medium text-slate-300">Enter Access Code</span>
-            </div>
-            <div className="relative">
-              <input
-                type={showCode ? 'text' : 'password'}
-                value={code}
-                onChange={e => { setCode(e.target.value); setError(false); }}
-                placeholder="••••"
-                maxLength={10}
-                autoFocus
-                className={cn(
-                  'w-full px-4 py-3 rounded-lg bg-white/[0.03] border text-center text-lg font-mono tracking-[0.5em] text-slate-200 placeholder:text-slate-700 outline-none transition-all',
-                  error ? 'border-red-500/50 shake' : 'border-white/[0.08] focus:border-novalyte-500/40'
-                )}
-              />
-              <button type="button" onClick={() => setShowCode(!showCode)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400 transition-colors">
-                {showCode ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+        {step === 'code' ? (
+          <form onSubmit={handleCodeSubmit} className="space-y-4">
+            <div className="glass-card p-6 space-y-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Lock className="w-4 h-4 text-novalyte-400" />
+                <span className="text-sm font-medium text-slate-300">Enter Access Code</span>
+              </div>
+              <div className="relative">
+                <input
+                  type={showCode ? 'text' : 'password'}
+                  value={code}
+                  onChange={e => { setCode(e.target.value); setError(false); }}
+                  placeholder="••••"
+                  maxLength={10}
+                  autoFocus
+                  className={cn(
+                    'w-full px-4 py-3 rounded-lg bg-white/[0.03] border text-center text-lg font-mono tracking-[0.5em] text-slate-200 placeholder:text-slate-700 outline-none transition-all',
+                    error ? 'border-red-500/50 shake' : 'border-white/[0.08] focus:border-novalyte-500/40'
+                  )}
+                />
+                <button type="button" onClick={() => setShowCode(!showCode)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400 transition-colors">
+                  {showCode ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              {error && (
+                <p className="text-xs text-red-400 text-center animate-fade-in">Invalid access code</p>
+              )}
+              <button type="submit" disabled={!code.trim() || loading}
+                className="w-full py-3 rounded-lg font-medium text-sm transition-all bg-[#06B6D4] text-[#000000] hover:bg-[#22D3EE] disabled:opacity-40 disabled:cursor-not-allowed">
+                {loading ? 'Verifying...' : 'Access Platform'}
               </button>
             </div>
-            {error && (
-              <p className="text-xs text-red-400 text-center animate-fade-in">Invalid access code</p>
-            )}
-            <button type="submit" disabled={!code.trim() || loading}
-              className="w-full py-3 rounded-lg font-medium text-sm transition-all bg-[#06B6D4] text-[#000000] hover:bg-[#22D3EE] disabled:opacity-40 disabled:cursor-not-allowed">
-              {loading ? 'Verifying...' : 'Access Platform'}
-            </button>
-          </div>
-        </form>
+          </form>
+        ) : (
+          <form onSubmit={handleNameSubmit} className="space-y-4">
+            <div className="glass-card p-6 space-y-4">
+              <div className="flex items-center gap-2 mb-2">
+                <UserCheck className="w-4 h-4 text-novalyte-400" />
+                <span className="text-sm font-medium text-slate-300">Welcome — What's your name?</span>
+              </div>
+              <input
+                type="text"
+                value={guestName}
+                onChange={e => setGuestName(e.target.value)}
+                placeholder="Your name"
+                autoFocus
+                className="w-full px-4 py-3 rounded-lg bg-white/[0.03] border border-white/[0.08] focus:border-novalyte-500/40 text-center text-lg text-slate-200 placeholder:text-slate-600 outline-none transition-all"
+              />
+              <button type="submit" disabled={!guestName.trim() || loading}
+                className="w-full py-3 rounded-lg font-medium text-sm transition-all bg-[#06B6D4] text-[#000000] hover:bg-[#22D3EE] disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                {loading ? 'Setting up...' : <><ArrowRight className="w-4 h-4" /> Enter Dashboard</>}
+              </button>
+            </div>
+          </form>
+        )}
 
         <p className="text-[10px] text-slate-600 text-center">
           Authorized personnel only · Novalyte AI © {new Date().getFullYear()}
@@ -123,11 +164,28 @@ function App() {
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [authenticated, setAuthenticated] = useState(() => sessionStorage.getItem('novalyte-auth') === 'true');
+  const [sessionInfo, setSessionInfo] = useState<SessionInfo | null>(() => getCurrentSession());
 
   useEffect(() => { initSupabase(); }, [initSupabase]);
 
+  // Setup session flush on mount
+  useEffect(() => {
+    if (authenticated && sessionInfo) {
+      const cleanup = setupSessionFlush();
+      return cleanup;
+    }
+  }, [authenticated, sessionInfo]);
+
+  // Track page views
+  const prevView = useCallback(() => currentView, [currentView]);
+  useEffect(() => {
+    if (authenticated && sessionInfo) {
+      trackPageView(currentView);
+    }
+  }, [currentView, authenticated, sessionInfo]);
+
   if (!authenticated) {
-    return <LoginScreen onAuth={() => setAuthenticated(true)} />;
+    return <LoginScreen onAuth={(session) => { setAuthenticated(true); setSessionInfo(session); }} />;
   }
 
   const getBadgeCount = (badge: string | null) => {
@@ -158,6 +216,7 @@ function App() {
   };
 
   const handleExport = () => {
+    trackAction('export', 'Exported all data as JSON');
     try {
       const state = useAppStore.getState();
       const payload = JSON.stringify(state, null, 2);
@@ -175,6 +234,7 @@ function App() {
   };
 
   const handleClear = () => {
+    trackAction('clear', 'Cleared all local data');
     if (!confirm('Clear all local data? This will reload the app.')) return;
     localStorage.removeItem('novalyte-store');
     window.location.reload();
