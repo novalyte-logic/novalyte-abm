@@ -369,6 +369,43 @@ export default function AIEngine() {
     try { return JSON.parse(localStorage.getItem('novalyte_drip_sequences') || '[]'); } catch { return []; }
   });
 
+  // ─── Import clinics from Clinic Discovery ───
+  const importFromDiscovery = () => {
+    try {
+      const raw = localStorage.getItem('novalyte_ai_engine_clinics');
+      if (!raw) { toast.error('No clinics pushed from Clinic Discovery yet. Go to Clinic Discovery and click "Push to AI Engine".'); return; }
+      const imported: any[] = JSON.parse(raw);
+      if (imported.length === 0) { toast.error('No clinics in the import queue'); return; }
+
+      // Merge with existing topProspects — dedup by clinic_id
+      const existingIds = new Set(topProspects.map(p => p.clinic_id));
+      const newOnes = imported.filter(p => !existingIds.has(p.clinic_id));
+      if (newOnes.length === 0) { toast('All clinics already imported'); return; }
+
+      const merged = [...topProspects, ...newOnes];
+      setTopProspects(merged);
+
+      // Update live numbers
+      setLiveNumbers(prev => ({
+        ...prev,
+        clinics: merged.length,
+        hot: merged.filter(p => p.propensity_tier === 'hot').length,
+        warm: merged.filter(p => p.propensity_tier === 'warm').length,
+        cold: merged.filter(p => p.propensity_tier === 'cold').length,
+        enriched: merged.filter(p => p.email || p.dm_email).length,
+      }));
+
+      toast.success(`Imported ${newOnes.length} clinics from Clinic Discovery (${merged.length} total)`);
+    } catch { toast.error('Failed to import clinics'); }
+  };
+
+  const discoveryClinicCount = (() => {
+    try {
+      const raw = localStorage.getItem('novalyte_ai_engine_clinics');
+      return raw ? JSON.parse(raw).length : 0;
+    } catch { return 0; }
+  })();
+
   // Persist state
   const persistState = useCallback(() => {
     saveState({
@@ -534,7 +571,29 @@ export default function AIEngine() {
       await waitUntil(startTime, 11000);
 
       setStatus({ step: 'complete', message: 'Pipeline complete', progress: 100, clinicsSynced: syncData.clinicsSynced, leadsSynced: syncData.leadsSynced, modelAccuracy: trainData.accuracy, hotProspects: scoreData.hotProspects, warmProspects: scoreData.warmProspects, coldProspects: scoreData.coldProspects });
-      setTopProspects(scoreData.topProspects || []);
+      
+      // Merge BigQuery results with any Clinic Discovery imports
+      let allProspects = scoreData.topProspects || [];
+      try {
+        const discoveryRaw = localStorage.getItem('novalyte_ai_engine_clinics');
+        if (discoveryRaw) {
+          const discoveryImports: any[] = JSON.parse(discoveryRaw);
+          const bqIds = new Set(allProspects.map((p: any) => p.clinic_id));
+          // Also match by name+city to catch duplicates across sources
+          const bqKeys = new Set(allProspects.map((p: any) => `${(p.name || '').toLowerCase()}|${(p.city || '').toLowerCase()}`));
+          const newFromDiscovery = discoveryImports.filter(d => {
+            if (bqIds.has(d.clinic_id)) return false;
+            const key = `${(d.name || '').toLowerCase()}|${(d.city || '').toLowerCase()}`;
+            if (bqKeys.has(key)) return false;
+            return true;
+          });
+          if (newFromDiscovery.length > 0) {
+            allProspects = [...allProspects, ...newFromDiscovery];
+          }
+        }
+      } catch {}
+      
+      setTopProspects(allProspects);
       const runTime = new Date();
       setLastRun(runTime);
       setPipelineHistory(prev => [{ timestamp: runTime.toISOString(), duration: 11, clinics: syncData.clinicsSynced, leads: syncData.leadsSynced, accuracy: trainData.accuracy, hotProspects: scoreData.hotProspects, status: 'success' }, ...prev.slice(0, 9)]);
@@ -741,6 +800,12 @@ export default function AIEngine() {
             <button onClick={() => setShowConfig(!showConfig)} className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-sm font-medium transition-all">
               <Settings className="w-4 h-4" /> Configure
             </button>
+            {discoveryClinicCount > 0 && (
+              <button onClick={importFromDiscovery}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 text-sm font-medium transition-all">
+                <Database className="w-4 h-4" /> Import Discovery ({discoveryClinicCount})
+              </button>
+            )}
             <button onClick={runPipeline} disabled={isRunning}
               className={cn('flex items-center gap-2.5 px-6 py-2.5 rounded-xl font-semibold text-sm transition-all shadow-lg',
                 !isRunning ? 'bg-[#06B6D4] text-black hover:bg-[#22D3EE] hover:scale-105' : 'bg-white/5 text-slate-500 cursor-not-allowed')}>
@@ -968,30 +1033,33 @@ export default function AIEngine() {
                 <button onClick={exportProspects} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-xs font-medium transition-all">
                   <Download className="w-3.5 h-3.5" /> CSV
                 </button>
-                <div className="relative">
-                  <button onClick={() => setShowAdsMenu(!showAdsMenu)} disabled={adsExporting}
+                <div className="relative" style={{ zIndex: showAdsMenu ? 60 : 'auto' }}>
+                  <button onClick={(e) => { e.stopPropagation(); setShowAdsMenu(!showAdsMenu); }} disabled={adsExporting}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#06B6D4]/10 hover:bg-[#06B6D4]/20 border border-[#06B6D4]/30 text-[#06B6D4] text-xs font-semibold transition-all">
                     {adsExporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />} Google Ads Export
                   </button>
                   {showAdsMenu && (
-                    <div className="absolute right-0 top-full mt-1 bg-black border border-white/10 rounded-lg shadow-xl z-50 py-1 min-w-[220px] animate-fade-in">
-                      <button onClick={() => { exportForGoogleAds('json'); setShowAdsMenu(false); }}
-                        className="w-full flex items-center gap-2 px-3 py-2.5 text-xs text-slate-300 hover:bg-white/5">
-                        <Brain className="w-3.5 h-3.5 text-[#06B6D4]" />
-                        <div className="text-left"><p className="font-medium">JSON for AI Studio</p><p className="text-[10px] text-slate-500">Full data + market stats for ad builder</p></div>
-                      </button>
-                      <button onClick={() => { exportForGoogleAds('csv'); setShowAdsMenu(false); }}
-                        className="w-full flex items-center gap-2 px-3 py-2.5 text-xs text-slate-300 hover:bg-white/5">
-                        <Download className="w-3.5 h-3.5 text-emerald-400" />
-                        <div className="text-left"><p className="font-medium">CSV for Ads Editor</p><p className="text-[10px] text-slate-500">Pre-formatted campaigns + ad groups</p></div>
-                      </button>
-                      <div className="border-t border-white/[0.06] my-1" />
-                      <button onClick={() => { navigator.clipboard.writeText('https://us-central1-warp-486714.cloudfunctions.net/bigquery-ads-export'); toast.success('API endpoint copied'); setShowAdsMenu(false); }}
-                        className="w-full flex items-center gap-2 px-3 py-2.5 text-xs text-slate-300 hover:bg-white/5">
-                        <Copy className="w-3.5 h-3.5 text-slate-400" />
-                        <div className="text-left"><p className="font-medium">Copy API Endpoint</p><p className="text-[10px] text-slate-500">For direct AI Studio integration</p></div>
-                      </button>
-                    </div>
+                    <>
+                      <div className="fixed inset-0" onClick={() => setShowAdsMenu(false)} />
+                      <div className="absolute right-0 top-full mt-1 bg-black border border-white/10 rounded-lg shadow-2xl py-1 min-w-[220px] animate-fade-in" style={{ zIndex: 61 }}>
+                        <button onClick={() => { exportForGoogleAds('json'); setShowAdsMenu(false); }}
+                          className="w-full flex items-center gap-2 px-3 py-2.5 text-xs text-slate-300 hover:bg-white/5 transition-colors">
+                          <Brain className="w-3.5 h-3.5 text-[#06B6D4]" />
+                          <div className="text-left"><p className="font-medium">JSON for AI Studio</p><p className="text-[10px] text-slate-500">Full data + market stats for ad builder</p></div>
+                        </button>
+                        <button onClick={() => { exportForGoogleAds('csv'); setShowAdsMenu(false); }}
+                          className="w-full flex items-center gap-2 px-3 py-2.5 text-xs text-slate-300 hover:bg-white/5 transition-colors">
+                          <Download className="w-3.5 h-3.5 text-emerald-400" />
+                          <div className="text-left"><p className="font-medium">CSV for Ads Editor</p><p className="text-[10px] text-slate-500">Pre-formatted campaigns + ad groups</p></div>
+                        </button>
+                        <div className="border-t border-white/[0.06] my-1" />
+                        <button onClick={() => { navigator.clipboard.writeText('https://us-central1-warp-486714.cloudfunctions.net/bigquery-ads-export'); toast.success('API endpoint copied'); setShowAdsMenu(false); }}
+                          className="w-full flex items-center gap-2 px-3 py-2.5 text-xs text-slate-300 hover:bg-white/5 transition-colors">
+                          <Copy className="w-3.5 h-3.5 text-slate-400" />
+                          <div className="text-left"><p className="font-medium">Copy API Endpoint</p><p className="text-[10px] text-slate-500">For direct AI Studio integration</p></div>
+                        </button>
+                      </div>
+                    </>
                   )}
                 </div>
               </div>
@@ -1177,7 +1245,6 @@ export default function AIEngine() {
       )}
 
       {/* ═══ Prospect Detail Modal ═══ */}
-      {showAdsMenu && <div className="fixed inset-0 z-40" onClick={() => setShowAdsMenu(false)} />}
       {selectedProspect && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" onClick={() => setSelectedProspect(null)}>
           <div className="glass-card p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>

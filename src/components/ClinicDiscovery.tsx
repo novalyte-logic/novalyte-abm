@@ -3,6 +3,7 @@ import {
   Building2, Search, RefreshCw, MapPin, Star, Phone, Globe, Plus,
   ExternalLink, Users, Radar, X, ChevronDown, ChevronUp,
   UserSearch, Trash2, CheckCircle2, LayoutGrid, LayoutList, Mail, Download,
+  Brain,
 } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
 import { clinicService } from '../services/clinicService';
@@ -270,6 +271,42 @@ function ClinicDiscovery() {
     toast.success('Clinic removed');
   };
 
+  // ─── Push clinics to AI Engine ───
+  const handlePushToAIEngine = () => {
+    const pool = filteredClinics;
+    if (pool.length === 0) { toast.error('No clinics to push'); return; }
+
+    // Map Clinic Discovery format → AI Engine prospect format
+    const prospects = pool.map(c => ({
+      clinic_id: c.id,
+      name: c.name,
+      city: c.address.city,
+      state: c.address.state,
+      phone: c.phone || null,
+      email: c.managerEmail || c.ownerEmail || c.email || null,
+      website: c.website || null,
+      propensity_score: 0, // unscored — pipeline will score them
+      propensity_tier: 'cold' as const,
+      affluence_score: c.marketZone?.affluenceScore || 0,
+      services: c.services || [],
+      rating: c.rating || null,
+      review_count: c.reviewCount || 0,
+      dm_name: c.managerName || c.ownerName || null,
+      dm_email: c.managerEmail || c.ownerEmail || null,
+      is_duplicate: false,
+      source: 'clinic_discovery',
+    }));
+
+    // Merge with any existing AI Engine clinics (dedup by clinic_id)
+    const existing = JSON.parse(localStorage.getItem('novalyte_ai_engine_clinics') || '[]');
+    const existingIds = new Set(existing.map((e: any) => e.clinic_id));
+    const newOnes = prospects.filter(p => !existingIds.has(p.clinic_id));
+    const merged = [...existing, ...newOnes];
+    localStorage.setItem('novalyte_ai_engine_clinics', JSON.stringify(merged));
+
+    toast.success(`Pushed ${newOnes.length} clinics to AI Engine (${merged.length} total)`);
+  };
+
   // ─── Sorting ───
 
   const toggleSort = (key: SortKey) => {
@@ -432,6 +469,11 @@ function ClinicDiscovery() {
           {notInCRM > 0 && (
             <button onClick={handleBulkSaveAll} disabled={isBulkSaving} className="btn bg-emerald-500/20 text-emerald-300 border border-emerald-500/20 hover:bg-emerald-500/30">
               {isBulkSaving ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <Users className="w-4 h-4 mr-2" />} Save All ({notInCRM})
+            </button>
+          )}
+          {filteredClinics.length > 0 && (
+            <button onClick={handlePushToAIEngine} className="btn bg-[#06B6D4]/20 text-[#06B6D4] border border-[#06B6D4]/20 hover:bg-[#06B6D4]/30">
+              <Brain className="w-4 h-4 mr-2" /> Push to AI Engine ({filteredClinics.length})
             </button>
           )}
         </div>
