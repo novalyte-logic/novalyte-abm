@@ -9,6 +9,8 @@ import {
 import { cn } from '../utils/cn';
 import { useAppStore } from '../stores/appStore';
 import toast from 'react-hot-toast';
+import VerificationControlPanel from './VerificationControlPanel';
+import { verificationQueueService } from '../services/verificationQueueService';
 
 type PipelineStep = 'idle' | 'syncing' | 'enriching' | 'training' | 'scoring' | 'complete' | 'error';
 
@@ -377,6 +379,15 @@ export default function AIEngine() {
   const [dripSequences, setDripSequences] = useState<any[]>(() => {
     try { return JSON.parse(localStorage.getItem('novalyte_drip_sequences') || '[]'); } catch { return []; }
   });
+  const [verificationStatusMap, setVerificationStatusMap] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!verificationQueueService.isConfigured || topProspects.length === 0) return;
+    const clinicIds = topProspects.slice(0, 400).map(p => p.clinic_id).filter(Boolean);
+    verificationQueueService.fetchClinicStatuses(clinicIds)
+      .then(setVerificationStatusMap)
+      .catch(() => {});
+  }, [topProspects]);
 
   // ─── Import clinics from Clinic Discovery ───
   const importFromDiscovery = () => {
@@ -1341,6 +1352,16 @@ export default function AIEngine() {
                     <td className="py-3 px-3">
                       <div className="flex items-center gap-2">
                         <div className="text-slate-200 font-medium text-sm">{p.name}</div>
+                        {verificationStatusMap[p.clinic_id] === 'Verified_Active' && (
+                          <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[9px] font-semibold border border-emerald-500/30 flex items-center gap-0.5">
+                            <CheckCircle className="w-2.5 h-2.5" /> Verified
+                          </span>
+                        )}
+                        {verificationStatusMap[p.clinic_id] === 'Sequence_Active' && (
+                          <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[9px] font-semibold border border-amber-500/30 flex items-center gap-0.5">
+                            <Mail className="w-2.5 h-2.5" /> Sequence
+                          </span>
+                        )}
                         {p.is_duplicate && (
                           <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 text-[9px] font-semibold border border-amber-500/30 flex items-center gap-0.5">
                             <Copy className="w-2.5 h-2.5" /> DUP
@@ -1390,6 +1411,14 @@ export default function AIEngine() {
           </div>
         </div>
       )}
+
+      <VerificationControlPanel
+        selectedClinicIds={selectedClinics}
+        onStatusesUpdated={(next) => {
+          if (Object.keys(next).length === 0) return;
+          setVerificationStatusMap(prev => ({ ...prev, ...next }));
+        }}
+      />
 
       {/* ═══ 5-Day Drip Sequence Schedule ═══ */}
       {dripSequences.length > 0 && (

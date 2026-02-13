@@ -145,6 +145,7 @@ export interface Clinic {
   ownerEmail?: string;
   // All enriched decision makers (from Apollo, NPI, etc.)
   enrichedContacts?: EnrichedContact[];
+  verificationStatus?: 'Ready' | 'Verified_Active' | 'Sequence_Active';
   services: string[];
   marketZone: MarketZone;
   discoveredAt: Date;

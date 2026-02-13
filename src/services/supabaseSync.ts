@@ -44,10 +44,16 @@ function clinicToRow(c: Clinic) {
     rating: c.rating ?? null, review_count: c.reviewCount ?? null,
     manager_name: c.managerName || null, manager_email: c.managerEmail || null,
     owner_name: c.ownerName || null, owner_email: c.ownerEmail || null,
+    verification_status: c.verificationStatus || 'Ready',
     services: c.services || [],
     market_id: c.marketZone.id,
     discovered_at: iso(c.discoveredAt), last_updated: iso(c.lastUpdated),
   };
+}
+
+function isMissingVerificationStatusError(message?: string | null): boolean {
+  const text = (message || '').toLowerCase();
+  return text.includes('verification_status') && text.includes('schema cache');
 }
 
 function rowToClinic(r: any, market: MarketZone): Clinic {
@@ -61,6 +67,7 @@ function rowToClinic(r: any, market: MarketZone): Clinic {
     managerName: r.manager_name || undefined, managerEmail: r.manager_email || undefined,
     ownerName: r.owner_name || undefined, ownerEmail: r.owner_email || undefined,
     enrichedContacts: r.enriched_contacts || undefined,
+    verificationStatus: r.verification_status || 'Ready',
     services: r.services || [],
     marketZone: market,
     discoveredAt: new Date(r.discovered_at), lastUpdated: new Date(r.last_updated),
@@ -234,7 +241,19 @@ class SupabaseSyncService {
     for (let i = 0; i < rows.length; i += 100) {
       const chunk = rows.slice(i, i + 100);
       const { error } = await supabase.from('clinics').upsert(chunk, { onConflict: 'id' });
-      if (error) console.error('syncClinics error:', error.message);
+      if (!error) continue;
+      if (!isMissingVerificationStatusError(error.message)) {
+        console.error('syncClinics error:', error.message);
+        continue;
+      }
+
+      const legacyChunk = chunk.map(c => {
+        const legacy = { ...c } as Record<string, unknown>;
+        delete legacy.verification_status;
+        return legacy;
+      });
+      const { error: legacyError } = await supabase.from('clinics').upsert(legacyChunk, { onConflict: 'id' });
+      if (legacyError) console.error('syncClinics fallback error:', legacyError.message);
     }
   }
 

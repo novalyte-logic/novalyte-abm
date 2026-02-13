@@ -1,12 +1,22 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from 'react';
 import {
-  BarChart3, TrendingUp, MousePointerClick, Users, Target, MapPin,
-  RefreshCw, Eye, Play, CheckCircle, UserPlus, Globe,
-  Smartphone, Monitor, Tablet, Clock, Percent, Radio, Zap,
-  Activity, Hash,
+  BarChart3, Users, Target,
+  RefreshCw, Eye, Globe,
+  Clock, Percent, Radio, Zap,
+  Hash, ChevronRight, ChevronDown,
 } from 'lucide-react';
 import { cn } from '../utils/cn';
 import { supabase } from '../lib/supabase';
+import { ResponsiveContainer, Sankey, Tooltip as RechartsTooltip } from 'recharts';
+import type { TrafficMapRef } from './TrafficMap';
+import SessionIntelPanel from './SessionIntelPanel';
+import FunnelChart from './FunnelChart';
+import CampaignTable from './CampaignTable';
+import DeviceTechRing from './DeviceTechRing';
+import TreatmentDemandBars from './TreatmentDemandBars';
+import LeadsTable from './LeadsTable';
+
+const TrafficMap = lazy(() => import('./TrafficMap'));
 
 /* ─── Types ─── */
 
@@ -49,7 +59,26 @@ interface PageEvent {
   gclid: string | null;
   geo_state: string | null;
   geo_city: string | null;
+  geo_lat?: number | null;
+  geo_lng?: number | null;
   device_type: string | null;
+  browser?: string | null;
+  os?: string | null;
+  referrer?: string | null;
+  landing_page?: string | null;
+  time_on_page?: number | null;
+}
+
+interface LiveTrafficEvent {
+  id: string;
+  session_id: string;
+  event_type: string;
+  created_at: string;
+  geo_city: string | null;
+  geo_state: string | null;
+  geo_lat: number | null;
+  geo_lng: number | null;
+  event_data: Record<string, any>;
 }
 
 interface LiveSession {
@@ -77,9 +106,12 @@ interface GeoLocation {
   lastActivity: Date;
 }
 
+type SessionIntelFilter = 'all' | 'navigation' | 'interactions' | 'quiz' | 'conversion' | 'heartbeat';
+
 /* ─── Component ─── */
 
 export default function AdAnalytics() {
+  const globeRef = useRef<TrafficMapRef | null>(null);
   const [leads, setLeads] = useState<LeadWithAttribution[]>([]);
   const [pageEvents, setPageEvents] = useState<PageEvent[]>([]);
   const [liveSessions, setLiveSessions] = useState<LiveSession[]>([]);
@@ -87,6 +119,16 @@ export default function AdAnalytics() {
   const [dateRange, setDateRange] = useState<'7d' | '30d' | '90d' | 'all'>('30d');
   const [isLive, setIsLive] = useState(false);
   const subscriptionRef = useRef<any>(null);
+  const liveTrafficRef = useRef<any>(null);
+  const leadsRealtimeRef = useRef<any>(null);
+  const inspectorRealtimeRef = useRef<any>(null);
+  const [liveTrafficFeed, setLiveTrafficFeed] = useState<LiveTrafficEvent[]>([]);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [inspectorSessionId, setInspectorSessionId] = useState<string | null>(null);
+  const [inspectorEvents, setInspectorEvents] = useState<PageEvent[]>([]);
+  const [inspectorLoading, setInspectorLoading] = useState(false);
+  const [inspectorFilter, setInspectorFilter] = useState<SessionIntelFilter>('all');
+  const [mapSidebarHovered, setMapSidebarHovered] = useState(false);
 
   /* ─── Data Fetching ─── */
 
@@ -96,6 +138,9 @@ export default function AdAnalytics() {
     setupRealtimeSubscription();
     return () => {
       if (subscriptionRef.current) supabase?.removeChannel(subscriptionRef.current);
+      if (liveTrafficRef.current) supabase?.removeChannel(liveTrafficRef.current);
+      if (leadsRealtimeRef.current) supabase?.removeChannel(leadsRealtimeRef.current);
+      if (inspectorRealtimeRef.current) supabase?.removeChannel(inspectorRealtimeRef.current);
     };
   }, [dateRange]);
 
@@ -112,6 +157,84 @@ export default function AdAnalytics() {
       })
       .subscribe();
     subscriptionRef.current = channel;
+
+    const liveTraffic = supabase
+      .channel('live-traffic')
+      .on('broadcast', { event: 'traffic' }, ({ payload }) => {
+        const createdAt = payload?.created_at || new Date().toISOString();
+        const liveEvent: LiveTrafficEvent = {
+          id: payload?.id || `live-${payload?.session_id || 'sess'}-${Date.now()}`,
+          session_id: payload?.session_id || 'unknown',
+          event_type: payload?.event_type || 'page_view',
+          created_at: createdAt,
+          geo_city: payload?.geo_city || null,
+          geo_state: payload?.geo_state || null,
+          geo_lat: typeof payload?.geo_lat === 'number' ? payload.geo_lat : null,
+          geo_lng: typeof payload?.geo_lng === 'number' ? payload.geo_lng : null,
+          event_data: payload?.event_data || {},
+        };
+
+        const syntheticPageEvent: PageEvent = {
+          id: liveEvent.id,
+          created_at: createdAt,
+          session_id: liveEvent.session_id,
+          event_type: liveEvent.event_type,
+          event_data: liveEvent.event_data,
+          utm_source: payload?.utm_source || null,
+          utm_medium: payload?.utm_medium || null,
+          utm_campaign: payload?.utm_campaign || null,
+          gclid: payload?.gclid || null,
+          geo_state: liveEvent.geo_state,
+          geo_city: liveEvent.geo_city,
+          geo_lat: liveEvent.geo_lat,
+          geo_lng: liveEvent.geo_lng,
+          device_type: payload?.device_type || null,
+        };
+
+        setPageEvents(prev => [syntheticPageEvent, ...prev].slice(0, 1000));
+        setLiveTrafficFeed(prev => [liveEvent, ...prev].slice(0, 40));
+        updateLiveSessions(syntheticPageEvent);
+        if (liveEvent.event_type === 'conversion' || liveEvent.event_type === 'lead_capture') {
+          playConversionTone();
+        }
+
+        setIsLive(true);
+        setTimeout(() => setIsLive(false), 3000);
+      })
+      .subscribe();
+    liveTrafficRef.current = liveTraffic;
+
+    const leadsChannel = supabase
+      .channel('leads_realtime')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'leads' }, (payload) => {
+        const lead = payload.new as LeadWithAttribution;
+        setLeads(prev => {
+          if (prev.some(l => l.id === lead.id)) return prev;
+          return [lead, ...prev].slice(0, 1000);
+        });
+      })
+      .subscribe();
+    leadsRealtimeRef.current = leadsChannel;
+  };
+
+  const playConversionTone = () => {
+    try {
+      const Ctx = (window as any).AudioContext || (window as any).webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.12, ctx.currentTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.25);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.3);
+      setTimeout(() => ctx.close().catch(() => {}), 350);
+    } catch {}
   };
 
   const updateLiveSessions = (event: PageEvent) => {
@@ -177,11 +300,84 @@ export default function AdAnalytics() {
 
   const refresh = useCallback(() => { fetchLeads(); fetchPageEvents(); }, [dateRange]);
 
+  const liveNowCount = useMemo(() => {
+    const cutoff = Date.now() - 2 * 60 * 1000;
+    return new Set(
+      liveTrafficFeed
+        .filter(e => new Date(e.created_at).getTime() >= cutoff)
+        .map(e => e.session_id)
+    ).size;
+  }, [liveTrafficFeed]);
+
+  const describeEvent = (e: PageEvent): string => {
+    if (e.event_type === 'session_start') return 'Landed on Home';
+    if (e.event_type === 'quiz_start') return 'Started Quiz';
+    if (e.event_type === 'quiz_complete') return 'Completed Quiz';
+    if (e.event_type === 'lead_capture' || e.event_type === 'conversion') return 'Captured Lead';
+    if (e.event_type === 'scroll_depth') return `Scrolled ${String(e.event_data?.percent || '')}%`;
+    if (e.event_type === 'interaction') return `Clicked ${String(e.event_data?.label || e.event_data?.section || 'interaction')}`;
+    if (e.event_type === 'heartbeat') return `Reading ${String(e.event_data?.section || e.event_data?.label || 'page')}`;
+    return String(e.event_data?.label || e.event_data?.section || e.event_type).replace(/_/g, ' ');
+  };
+
+  const openSessionInspector = async (sessionId: string) => {
+    setInspectorOpen(true);
+    setInspectorSessionId(sessionId);
+    setInspectorFilter('all');
+    setInspectorLoading(true);
+    try {
+      if (!supabase) {
+        setInspectorEvents(pageEvents.filter(e => e.session_id === sessionId).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()));
+        return;
+      }
+      const { data } = await supabase
+        .from('page_events')
+        .select('*')
+        .eq('session_id', sessionId)
+        .order('created_at', { ascending: true })
+        .limit(300);
+      setInspectorEvents((data || []) as PageEvent[]);
+    } catch {
+      setInspectorEvents(pageEvents.filter(e => e.session_id === sessionId).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()));
+    } finally {
+      setInspectorLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!inspectorOpen || !inspectorSessionId || !supabase) return;
+
+    if (inspectorRealtimeRef.current) {
+      supabase.removeChannel(inspectorRealtimeRef.current);
+      inspectorRealtimeRef.current = null;
+    }
+
+    const channel = supabase
+      .channel(`session_intel_${inspectorSessionId}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'page_events', filter: `session_id=eq.${inspectorSessionId}` },
+        (payload) => {
+          const evt = payload.new as PageEvent;
+          setInspectorEvents(prev => [...prev, evt].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()));
+        }
+      )
+      .subscribe();
+
+    inspectorRealtimeRef.current = channel;
+
+    return () => {
+      if (inspectorRealtimeRef.current) {
+        supabase.removeChannel(inspectorRealtimeRef.current);
+        inspectorRealtimeRef.current = null;
+      }
+    };
+  }, [inspectorOpen, inspectorSessionId]);
+
   /* ─── Computed Metrics ─── */
 
   const paidLeads = leads.filter(l => l.utm_source || l.gclid);
   const googleAdsLeads = leads.filter(l => l.gclid || l.utm_source === 'google');
-  const organicLeads = leads.filter(l => !l.utm_source && !l.gclid);
 
   // Unique sessions from page events
   const uniqueSessions = useMemo(() => new Set(pageEvents.map(e => e.session_id)).size, [pageEvents]);
@@ -193,26 +389,31 @@ export default function AdAnalytics() {
   const leadCaptures = pageEvents.filter(e => e.event_type === 'lead_capture').length || leads.length;
 
   // Campaign breakdown
-  const campaignMetrics = useMemo(() => {
-    const map = new Map<string, LeadWithAttribution[]>();
-    paidLeads.forEach(l => {
-      const c = l.utm_campaign || 'Unknown Campaign';
-      if (!map.has(c)) map.set(c, []);
-      map.get(c)!.push(l);
-    });
-    return Array.from(map.entries()).map(([campaign, cls]) => {
-      const conversions = cls.filter(l => l.status !== 'new').length;
-      const devices = { mobile: 0, desktop: 0, tablet: 0 };
-      cls.forEach(l => { const d = (l.device_type || 'desktop').toLowerCase(); if (d === 'mobile') devices.mobile++; else if (d === 'tablet') devices.tablet++; else devices.desktop++; });
-      const scores = cls.filter(l => l.match_score).map(l => l.match_score!);
-      return {
-        campaign, leads: cls.length, conversions,
-        conversionRate: cls.length ? Math.round((conversions / cls.length) * 100) : 0,
-        avgMatchScore: scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0,
-        devices,
-      };
-    }).sort((a, b) => b.leads - a.leads);
-  }, [paidLeads]);
+  const campaignLeadRows = useMemo(() => (
+    paidLeads.map(l => ({
+      id: l.id,
+      utm_campaign: l.utm_campaign,
+      utm_term: l.utm_term,
+      utm_content: l.utm_content,
+      status: l.status,
+      match_score: l.match_score,
+      geo_city: l.geo_city,
+      geo_state: l.geo_state,
+    }))
+  ), [paidLeads]);
+
+  const affluenceSources = useMemo(() => {
+    let raw: any[] = [];
+    try {
+      raw = JSON.parse(localStorage.getItem('novalyte_ai_engine_clinics') || '[]');
+    } catch {}
+
+    return raw.map((r: any) => ({
+      city: r.city || null,
+      state: r.state || null,
+      affluence_score: r.affluence_score || null,
+    }));
+  }, []);
 
   // Geo locations for map — aggregated from BOTH leads and page_events at city level
   const geoLocations: GeoLocation[] = useMemo(() => {
@@ -256,7 +457,9 @@ export default function AdAnalytics() {
       if (!key) return;
       const city = (e.geo_city || '').trim();
       const state = (e.geo_state || '').trim();
-      const coords = getCityCoords(city, state);
+      const coords = (typeof e.geo_lat === 'number' && typeof e.geo_lng === 'number')
+        ? { lat: e.geo_lat, lng: e.geo_lng }
+        : getCityCoords(city, state);
       if (!coords) return;
       const existing = locMap.get(key);
       if (existing) {
@@ -296,6 +499,20 @@ export default function AdAnalytics() {
     return d;
   }, [pageEvents, leads]);
   const totalDevices = deviceBreakdown.mobile + deviceBreakdown.desktop + deviceBreakdown.tablet;
+
+  const deviceConversionRates = useMemo(() => {
+    const calc = (device: 'mobile' | 'desktop' | 'tablet') => {
+      const deviceLeads = leads.filter(l => (l.device_type || 'desktop').toLowerCase() === device);
+      if (!deviceLeads.length) return 0;
+      const converted = deviceLeads.filter(l => l.status !== 'new').length;
+      return Math.round((converted / deviceLeads.length) * 100);
+    };
+    return {
+      mobile: calc('mobile'),
+      desktop: calc('desktop'),
+      tablet: calc('tablet'),
+    };
+  }, [leads]);
 
   // Treatment breakdown
   const topTreatments = useMemo(() => {
@@ -438,29 +655,65 @@ export default function AdAnalytics() {
               {geoLocations.length} location{geoLocations.length !== 1 ? 's' : ''} tracked
             </span>
           </h2>
-          {geoLocations.length > 0 && (
-            <span className="text-[10px] text-slate-500">Hover markers for details • Click to zoom</span>
-          )}
+          <span className="text-[10px] text-slate-500">LIVE {liveNowCount} • Hover marker pauses spin • Click marker opens intel</span>
         </div>
-        <div className="grid lg:grid-cols-4 gap-4">
-          <div className="lg:col-span-3">
-            <TrafficMap locations={geoLocations} apiKey={import.meta.env.VITE_GOOGLE_PLACES_API_KEY} />
-          </div>
-          <div className="space-y-3">
+        <div className="relative">
+          <Suspense fallback={
+            <div className="h-[620px] rounded-xl border border-white/[0.08] bg-black flex items-center justify-center">
+              <p className="text-xs text-slate-500">Loading 3D Globe...</p>
+            </div>
+          }>
+            <TrafficMap
+              ref={globeRef}
+              height={620}
+              locations={geoLocations}
+              liveEvents={liveTrafficFeed}
+              onPointSelect={(payload) => {
+                const sessionId = payload.sessionId || payload.sessionData[0]?.session_id || null;
+                if (sessionId) openSessionInspector(sessionId);
+              }}
+            />
+          </Suspense>
+
+          <div
+            className={cn(
+              'absolute top-3 right-3 h-[calc(100%-24px)] rounded-xl border border-white/[0.08] bg-black/70 backdrop-blur-xl transition-all duration-300 ease-in-out overflow-hidden',
+              mapSidebarHovered ? 'w-[300px]' : 'w-12'
+            )}
+            onMouseEnter={() => setMapSidebarHovered(true)}
+            onMouseLeave={() => setMapSidebarHovered(false)}
+          >
+            {!mapSidebarHovered ? (
+              <div className="h-full flex flex-col items-center pt-3 text-slate-500">
+                <span className="text-[10px] [writing-mode:vertical-rl] rotate-180 tracking-wider">INTEL</span>
+              </div>
+            ) : (
+              <div className="h-full overflow-auto p-3 space-y-3">
             {/* Top Cities */}
             <div>
               <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium mb-2">Top Cities</p>
               <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
                 {topCities.length === 0 && <p className="text-[10px] text-slate-600 py-2">Awaiting geo data...</p>}
                 {topCities.map((c, i) => (
-                  <div key={c.city} className="flex items-center gap-2 p-1.5 bg-white/[0.02] rounded-lg hover:bg-white/[0.04] transition-colors">
+                  <button
+                    key={c.city}
+                    onClick={() => {
+                      if (c.city.toLowerCase() === 'san francisco') {
+                        globeRef.current?.flyTo(37.7749, -122.4194, 1.5, 1200);
+                        return;
+                      }
+                      const loc = geoLocations.find(g => g.city === c.city && (c.state ? g.state === c.state : true));
+                      if (loc) globeRef.current?.flyTo(loc.lat, loc.lng, 1.5, 1200);
+                    }}
+                    className="w-full text-left flex items-center gap-2 p-1.5 bg-white/[0.02] rounded-lg hover:bg-white/[0.04] transition-colors"
+                  >
                     <span className="w-5 h-5 rounded-full bg-novalyte-500/20 text-novalyte-400 text-[9px] font-bold flex items-center justify-center shrink-0">{i + 1}</span>
                     <div className="flex-1 min-w-0">
                       <span className="text-[11px] text-slate-300 block truncate">{c.city}</span>
                       {c.state && <span className="text-[9px] text-slate-600">{c.state}</span>}
                     </div>
                     <span className="text-[10px] text-novalyte-400 font-semibold">{c.count}</span>
-                  </div>
+                  </button>
                 ))}
               </div>
             </div>
@@ -484,213 +737,49 @@ export default function AdAnalytics() {
                 })}
               </div>
             </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
 
       {/* Funnel + Campaign Row */}
       <div className="grid lg:grid-cols-2 gap-4">
-        {/* Funnel */}
-        <div className="glass-card p-4">
-          <h2 className="text-sm font-semibold text-slate-200 mb-4 flex items-center gap-2">
-            <TrendingUp className="w-4 h-4 text-novalyte-400" />
-            Landing Page Funnel
-          </h2>
-          <div className="flex items-end justify-between gap-3 h-36">
-            {[
-              { name: 'Page Views', count: pageViews, icon: Eye, color: 'bg-slate-600' },
-              { name: 'Quiz Started', count: quizStarts, icon: Play, color: 'bg-novalyte-600' },
-              { name: 'Quiz Completed', count: quizCompletes, icon: CheckCircle, color: 'bg-novalyte-500' },
-              { name: 'Lead Captured', count: leadCaptures, icon: UserPlus, color: 'bg-emerald-500' },
-            ].map((step, i) => {
-              const Icon = step.icon;
-              const rate = pageViews ? Math.round((step.count / pageViews) * 100) : (i === 0 ? 100 : 0);
-              const h = Math.max(rate, 5);
-              return (
-                <div key={step.name} className="flex-1 flex flex-col items-center gap-1.5">
-                  <div className="text-xs text-slate-400 font-medium">{step.count.toLocaleString()}</div>
-                  <div className="w-full bg-white/[0.03] rounded-t-lg relative overflow-hidden" style={{ height: `${h}%` }}>
-                    <div className={cn('absolute inset-0 rounded-t-lg', step.color)} />
-                  </div>
-                  <Icon className="w-3.5 h-3.5 text-slate-500" />
-                  <span className="text-[9px] text-slate-500 text-center leading-tight">{step.name}</span>
-                  <span className="text-[9px] text-slate-600">{rate}%</span>
-                </div>
-              );
-            })}
-          </div>
-          {/* Drop-off rates */}
-          <div className="flex justify-between mt-3 pt-3 border-t border-white/[0.04]">
-            {[
-              { label: 'View→Start', from: pageViews, to: quizStarts },
-              { label: 'Start→Complete', from: quizStarts, to: quizCompletes },
-              { label: 'Complete→Lead', from: quizCompletes, to: leadCaptures },
-            ].map(d => {
-              const rate = d.from ? Math.round((d.to / d.from) * 100) : 0;
-              return (
-                <div key={d.label} className="text-center">
-                  <div className={cn('text-xs font-semibold', rate >= 50 ? 'text-emerald-400' : rate >= 25 ? 'text-amber-400' : 'text-red-400')}>{rate}%</div>
-                  <div className="text-[9px] text-slate-600">{d.label}</div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Campaign Performance */}
-        <div className="glass-card p-4">
-          <h2 className="text-sm font-semibold text-slate-200 mb-3 flex items-center gap-2">
-            <MousePointerClick className="w-4 h-4 text-novalyte-400" />
-            Campaign Performance
-          </h2>
-          {campaignMetrics.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-10 text-center">
-              <Activity className="w-8 h-8 text-slate-700 mb-2" />
-              <p className="text-xs text-slate-500">No campaign data yet</p>
-              <p className="text-[10px] text-slate-600 mt-1">Run Google Ads with UTM parameters to see data here</p>
-            </div>
-          ) : (
-            <div className="space-y-2 max-h-[280px] overflow-y-auto">
-              {campaignMetrics.map(c => (
-                <div key={c.campaign} className="p-3 bg-white/[0.02] rounded-lg border border-white/[0.04] hover:border-novalyte-500/20 transition-colors">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-medium text-slate-200 truncate flex-1">{c.campaign}</span>
-                    <span className="text-xs text-novalyte-400 font-semibold ml-2">{c.leads} leads</span>
-                  </div>
-                  <div className="flex items-center gap-4 text-[10px] text-slate-500">
-                    <span className="flex items-center gap-1"><Percent className="w-3 h-3" /> {c.conversionRate}%</span>
-                    <span className="flex items-center gap-1"><Target className="w-3 h-3" /> {c.avgMatchScore}% match</span>
-                    <span className="flex items-center gap-1"><Smartphone className="w-3 h-3" />{c.devices.mobile} <Monitor className="w-3 h-3 ml-1" />{c.devices.desktop}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        <FunnelChart events={pageEvents as any} />
+        <CampaignTable leads={campaignLeadRows as any} affluenceSources={affluenceSources as any} />
       </div>
 
       {/* Bottom Row: Device + Treatment + Sources */}
       <div className="grid md:grid-cols-3 gap-4">
-        <div className="glass-card p-4">
-          <h2 className="text-sm font-semibold text-slate-200 mb-3">Device Breakdown</h2>
-          <div className="space-y-3">
-            {[
-              { icon: Smartphone, label: 'Mobile', count: deviceBreakdown.mobile },
-              { icon: Monitor, label: 'Desktop', count: deviceBreakdown.desktop },
-              { icon: Tablet, label: 'Tablet', count: deviceBreakdown.tablet },
-            ].map(d => {
-              const pct = totalDevices ? Math.round((d.count / totalDevices) * 100) : 0;
-              return (
-                <div key={d.label} className="flex items-center gap-3">
-                  <d.icon className="w-4 h-4 text-slate-500" />
-                  <span className="text-xs text-slate-300 flex-1">{d.label}</span>
-                  <div className="w-16 h-1.5 bg-white/[0.05] rounded-full overflow-hidden">
-                    <div className="h-full bg-novalyte-500 rounded-full" style={{ width: `${pct}%` }} />
-                  </div>
-                  <span className="text-[10px] text-slate-500 w-10 text-right">{pct}%</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        <div className="glass-card p-4">
-          <h2 className="text-sm font-semibold text-slate-200 mb-3">Treatment Interest</h2>
-          <div className="space-y-2">
-            {topTreatments.slice(0, 5).map(([treatment, count]) => {
-              const pct = leads.length ? Math.round((count / leads.length) * 100) : 0;
-              return (
-                <div key={treatment} className="flex items-center gap-2">
-                  <span className="text-xs text-slate-300 flex-1 truncate capitalize">{treatment}</span>
-                  <span className="text-[10px] text-novalyte-400 font-medium">{pct}%</span>
-                  <span className="text-[10px] text-slate-500">({count})</span>
-                </div>
-              );
-            })}
-            {topTreatments.length === 0 && <p className="text-[10px] text-slate-600 py-2">No data yet</p>}
-          </div>
-        </div>
-        <div className="glass-card p-4">
-          <h2 className="text-sm font-semibold text-slate-200 mb-3">Traffic Sources</h2>
-          <div className="space-y-2">
-            {[
-              { label: 'Google Ads', count: googleAdsLeads.length, color: 'bg-emerald-500' },
-              { label: 'Other Paid', count: paidLeads.length - googleAdsLeads.length, color: 'bg-amber-500' },
-              { label: 'Organic', count: organicLeads.length, color: 'bg-slate-500' },
-            ].map(s => {
-              const pct = leads.length ? Math.round((s.count / leads.length) * 100) : 0;
-              return (
-                <div key={s.label} className="flex items-center gap-2">
-                  <div className={cn('w-2 h-2 rounded-full', s.color)} />
-                  <span className="text-xs text-slate-300 flex-1">{s.label}</span>
-                  <span className="text-[10px] text-slate-500">{s.count}</span>
-                  <span className="text-[10px] text-slate-400 font-medium w-8 text-right">{pct}%</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
+        <DeviceTechRing
+          mobile={deviceBreakdown.mobile}
+          desktop={deviceBreakdown.desktop}
+          tablet={deviceBreakdown.tablet}
+          total={totalDevices}
+          conversionRates={deviceConversionRates}
+        />
+        <TreatmentDemandBars
+          treatments={topTreatments}
+          totalLeads={leads.length}
+        />
+        <TrafficSourceFlow leads={leads} pageEvents={pageEvents} />
       </div>
 
       {/* ═══ DETAILED TRAFFIC SOURCES ═══ */}
       <TrafficSourcesDetail leads={leads} pageEvents={pageEvents} />
 
-      {/* Recent Leads Table */}
-      <div className="glass-card p-4">
-        <h2 className="text-sm font-semibold text-slate-200 mb-3 flex items-center gap-2">
-          <Users className="w-4 h-4 text-novalyte-400" />
-          Recent Leads with Attribution
-        </h2>
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-slate-500 border-b border-white/[0.06]">
-                <th className="text-left py-2 px-2 font-medium">Lead</th>
-                <th className="text-left py-2 px-2 font-medium">Source</th>
-                <th className="text-left py-2 px-2 font-medium">Campaign</th>
-                <th className="text-left py-2 px-2 font-medium">Location</th>
-                <th className="text-left py-2 px-2 font-medium">Device</th>
-                <th className="text-left py-2 px-2 font-medium">Score</th>
-                <th className="text-left py-2 px-2 font-medium">Date</th>
-              </tr>
-            </thead>
-            <tbody>
-              {leads.slice(0, 25).map(lead => (
-                <tr key={lead.id} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
-                  <td className="py-2 px-2">
-                    <div className="text-slate-200 font-medium">{lead.name || 'Unknown'}</div>
-                    <div className="text-slate-500 text-[10px]">{lead.email}</div>
-                  </td>
-                  <td className="py-2 px-2">
-                    <span className={cn('px-1.5 py-0.5 rounded text-[10px] font-medium',
-                      lead.gclid ? 'bg-emerald-500/20 text-emerald-400' :
-                      lead.utm_source ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-500/20 text-slate-400'
-                    )}>{lead.gclid ? 'Google Ads' : lead.utm_source || 'Organic'}</span>
-                  </td>
-                  <td className="py-2 px-2 text-slate-400 max-w-[120px] truncate">{lead.utm_campaign || '—'}</td>
-                  <td className="py-2 px-2">
-                    <div className="text-slate-300 text-[11px]">{lead.geo_city || '—'}</div>
-                    <div className="text-slate-600 text-[9px]">{[lead.geo_state, lead.geo_zip].filter(Boolean).join(' ') || ''}</div>
-                  </td>
-                  <td className="py-2 px-2">
-                    {lead.device_type === 'mobile' ? <Smartphone className="w-3.5 h-3.5 text-slate-500" /> :
-                     lead.device_type === 'tablet' ? <Tablet className="w-3.5 h-3.5 text-slate-500" /> :
-                     <Monitor className="w-3.5 h-3.5 text-slate-500" />}
-                  </td>
-                  <td className="py-2 px-2">
-                    {lead.match_score ? (
-                      <span className={cn('text-[10px] font-semibold',
-                        lead.match_score >= 80 ? 'text-emerald-400' : lead.match_score >= 60 ? 'text-novalyte-400' : 'text-amber-400'
-                      )}>{lead.match_score}%</span>
-                    ) : '—'}
-                  </td>
-                  <td className="py-2 px-2 text-slate-500">{new Date(lead.created_at).toLocaleDateString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {leads.length === 0 && <p className="text-center text-slate-500 py-8">No leads yet. Run Google Ads campaigns to intel-landing.</p>}
-        </div>
-      </div>
+      <LeadsTable leads={leads as any} />
+
+      <SessionIntelPanel
+        open={inspectorOpen}
+        onClose={() => setInspectorOpen(false)}
+        sessionId={inspectorSessionId}
+        events={inspectorEvents}
+        loading={inspectorLoading}
+        activeFilter={inspectorFilter}
+        onFilterChange={setInspectorFilter}
+        describeEvent={describeEvent}
+      />
     </div>
   );
 }
@@ -848,441 +937,300 @@ function getCityCoords(city: string, state: string): { lat: number; lng: number 
   return null;
 }
 
-/* ─── Interactive Traffic Map ─── */
+/* ─── Detailed Traffic Sources Component ─── */
 
-function TrafficMap({ locations, apiKey }: { locations: GeoLocation[]; apiKey: string }) {
-  const mapRef = useRef<HTMLDivElement>(null);
-  const [mapLoaded, setMapLoaded] = useState(false);
-  const [mapError, setMapError] = useState<string | null>(null);
-  const mapInstanceRef = useRef<any>(null);
-  const markersRef = useRef<any[]>([]);
+type SourceName = 'Google Ads' | 'Organic' | 'Direct';
 
-  useEffect(() => {
-    if (!mapRef.current || !apiKey) return;
-    let cancelled = false;
+interface KeywordMetrics {
+  name: string;
+  sessions: number;
+  leads: number;
+  bounce: number;
+}
 
-    const initMap = async () => {
-      try {
-        // Load Google Maps JS API
-        if (!(window as any).google?.maps) {
-          await new Promise<void>((resolve, reject) => {
-            // Check if script already loading
-            if (document.querySelector('script[src*="maps.googleapis.com"]')) {
-              const check = setInterval(() => {
-                if ((window as any).google?.maps) { clearInterval(check); resolve(); }
-              }, 100);
-              setTimeout(() => { clearInterval(check); reject(new Error('Maps load timeout')); }, 10000);
-              return;
-            }
-            const script = document.createElement('script');
-            script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&v=weekly`;
-            script.async = true;
-            script.onload = () => resolve();
-            script.onerror = () => reject(new Error('Failed to load Google Maps'));
-            document.head.appendChild(script);
-          });
-        }
+interface CampaignMetrics {
+  name: string;
+  sessions: number;
+  leads: number;
+  bounce: number;
+  keywords: KeywordMetrics[];
+}
 
-        if (cancelled || !mapRef.current) return;
-        const gm = (window as any).google.maps;
+interface SourceMetrics {
+  name: SourceName;
+  sessions: number;
+  leads: number;
+  bounce: number;
+  campaigns: CampaignMetrics[];
+}
 
-        // Dark style
-        const darkStyle = [
-          { elementType: 'geometry', stylers: [{ color: '#0a0a0f' }] },
-          { elementType: 'labels.text.stroke', stylers: [{ color: '#0a0a0f' }] },
-          { elementType: 'labels.text.fill', stylers: [{ color: '#3a3f4b' }] },
-          { featureType: 'administrative', elementType: 'geometry.stroke', stylers: [{ color: '#1a1a2e' }] },
-          { featureType: 'administrative.country', elementType: 'geometry.stroke', stylers: [{ color: '#2a2a3e' }] },
-          { featureType: 'administrative.province', elementType: 'geometry.stroke', stylers: [{ color: '#1a1a2e' }] },
-          { featureType: 'poi', stylers: [{ visibility: 'off' }] },
-          { featureType: 'road', stylers: [{ visibility: 'off' }] },
-          { featureType: 'transit', stylers: [{ visibility: 'off' }] },
-          { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#070d15' }] },
-          { featureType: 'water', elementType: 'labels', stylers: [{ visibility: 'off' }] },
-          { featureType: 'landscape', elementType: 'geometry', stylers: [{ color: '#0d0d14' }] },
-        ];
+function classifySource(rawSource?: string | null, rawMedium?: string | null, gclid?: string | null): SourceName {
+  const source = (rawSource || '').toLowerCase();
+  const medium = (rawMedium || '').toLowerCase();
 
-        // Create or reuse map
-        if (!mapInstanceRef.current) {
-          mapInstanceRef.current = new gm.Map(mapRef.current, {
-            center: { lat: 39.0, lng: -98.0 },
-            zoom: 4,
-            styles: darkStyle,
-            disableDefaultUI: true,
-            zoomControl: true,
-            backgroundColor: '#0a0a0f',
-            gestureHandling: 'cooperative',
-          });
-        }
+  if (gclid || (source === 'google' && (medium === 'cpc' || medium === 'ppc' || medium === 'paid'))) return 'Google Ads';
+  if (!source || source === '(direct)' || source === 'direct') return 'Direct';
+  return 'Organic';
+}
 
-        const map = mapInstanceRef.current;
+function buildTrafficTree(leads: LeadWithAttribution[], pageEvents: PageEvent[]): SourceMetrics[] {
+  const tree = new Map<SourceName, { sessions: number; leads: number; campaigns: Map<string, { sessions: number; leads: number; keywords: Map<string, { sessions: number; leads: number }> }> }>();
 
-        // Clear old markers
-        markersRef.current.forEach(m => m.setMap(null));
-        markersRef.current = [];
+  const ensureSource = (source: SourceName) => {
+    if (!tree.has(source)) tree.set(source, { sessions: 0, leads: 0, campaigns: new Map() });
+    return tree.get(source)!;
+  };
+  const ensureCampaign = (sourceNode: ReturnType<typeof ensureSource>, campaign: string) => {
+    if (!sourceNode.campaigns.has(campaign)) sourceNode.campaigns.set(campaign, { sessions: 0, leads: 0, keywords: new Map() });
+    return sourceNode.campaigns.get(campaign)!;
+  };
+  const ensureKeyword = (campaignNode: ReturnType<typeof ensureCampaign>, keyword: string) => {
+    if (!campaignNode.keywords.has(keyword)) campaignNode.keywords.set(keyword, { sessions: 0, leads: 0 });
+    return campaignNode.keywords.get(keyword)!;
+  };
 
-        // Max visitors for scaling
-        const maxVisitors = Math.max(...locations.map(l => l.visitors), 1);
+  const bySession = new Map<string, { source: SourceName; campaign: string; keyword: string }>();
+  pageEvents.forEach((e) => {
+    if (!e.session_id || bySession.has(e.session_id)) return;
+    bySession.set(e.session_id, {
+      source: classifySource(e.utm_source, e.utm_medium, e.gclid),
+      campaign: e.utm_campaign || String((e.event_data as any)?.utm_campaign || 'Unattributed'),
+      keyword: String((e.event_data as any)?.utm_term || '(no keyword)'),
+    });
+  });
 
-        // Add markers with rich tooltips
-        locations.forEach(loc => {
-          const scale = Math.max(6, Math.min(20, 6 + (loc.visitors / maxVisitors) * 14));
-          const opacity = Math.max(0.5, Math.min(1, 0.5 + (loc.visitors / maxVisitors) * 0.5));
+  bySession.forEach(({ source, campaign, keyword }) => {
+    const sourceNode = ensureSource(source);
+    sourceNode.sessions += 1;
+    const campaignNode = ensureCampaign(sourceNode, campaign);
+    campaignNode.sessions += 1;
+    const keywordNode = ensureKeyword(campaignNode, keyword);
+    keywordNode.sessions += 1;
+  });
 
-          const marker = new gm.Marker({
-            position: { lat: loc.lat, lng: loc.lng },
-            map,
-            icon: {
-              path: gm.SymbolPath.CIRCLE,
-              fillColor: loc.leads > 0 ? '#06B6D4' : '#22D3EE',
-              fillOpacity: opacity,
-              strokeColor: '#06B6D4',
-              strokeWeight: loc.leads > 0 ? 2 : 1,
-              scale,
-            },
-            title: `${loc.city}${loc.state ? ', ' + loc.state : ''}`,
-            zIndex: loc.visitors,
-          });
+  leads.forEach((lead) => {
+    const source = classifySource(lead.utm_source, lead.utm_medium, lead.gclid);
+    const campaign = lead.utm_campaign || 'Unattributed';
+    const keyword = lead.utm_term || '(no keyword)';
+    const sourceNode = ensureSource(source);
+    sourceNode.leads += 1;
+    const campaignNode = ensureCampaign(sourceNode, campaign);
+    campaignNode.leads += 1;
+    const keywordNode = ensureKeyword(campaignNode, keyword);
+    keywordNode.leads += 1;
+  });
 
-          // Rich tooltip on hover
-          const infoContent = `
-            <div style="font-family:Inter,system-ui,sans-serif;padding:8px 4px;min-width:180px;color:#1a1a2e;">
-              <div style="font-size:13px;font-weight:700;margin-bottom:6px;color:#0a0a0f;">
-                📍 ${loc.city}${loc.state ? ', ' + loc.state : ''}
-              </div>
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:11px;">
-                <div style="color:#666;">Visitors</div>
-                <div style="font-weight:600;color:#0891B2;">${loc.visitors}</div>
-                <div style="color:#666;">Leads</div>
-                <div style="font-weight:600;color:${loc.leads > 0 ? '#059669' : '#666'};">${loc.leads}</div>
-                <div style="color:#666;">Sessions</div>
-                <div style="font-weight:600;color:#0a0a0f;">${loc.sessions}</div>
-                <div style="color:#666;">Device</div>
-                <div style="font-weight:500;color:#0a0a0f;text-transform:capitalize;">${loc.topDevice}</div>
-                <div style="color:#666;">Source</div>
-                <div style="font-weight:500;color:#0a0a0f;">${loc.topSource}</div>
-                ${loc.topTreatment ? `<div style="color:#666;">Treatment</div><div style="font-weight:500;color:#0a0a0f;text-transform:capitalize;">${loc.topTreatment}</div>` : ''}
-              </div>
-              <div style="margin-top:6px;font-size:9px;color:#999;">
-                Last activity: ${formatTimeAgo(loc.lastActivity)}
-              </div>
-            </div>
-          `;
+  const normalize = (sessions: number, leadsCount: number) => Math.max(0, sessions - leadsCount);
+  const sourceOrder: SourceName[] = ['Google Ads', 'Organic', 'Direct'];
 
-          const infoWindow = new gm.InfoWindow({ content: infoContent, maxWidth: 250 });
+  return sourceOrder.map((name) => {
+    const source = ensureSource(name);
+    const campaigns = Array.from(source.campaigns.entries())
+      .map(([campaignName, campaignNode]): CampaignMetrics => {
+        const keywords = Array.from(campaignNode.keywords.entries())
+          .map(([keywordName, keywordNode]): KeywordMetrics => ({
+            name: keywordName,
+            sessions: keywordNode.sessions,
+            leads: keywordNode.leads,
+            bounce: normalize(keywordNode.sessions, keywordNode.leads),
+          }))
+          .sort((a, b) => b.sessions - a.sessions || b.leads - a.leads);
 
-          marker.addListener('mouseover', () => infoWindow.open(map, marker));
-          marker.addListener('mouseout', () => infoWindow.close());
-          marker.addListener('click', () => {
-            map.panTo(marker.getPosition());
-            map.setZoom(Math.min(map.getZoom() + 2, 12));
-          });
+        return {
+          name: campaignName,
+          sessions: campaignNode.sessions,
+          leads: campaignNode.leads,
+          bounce: normalize(campaignNode.sessions, campaignNode.leads),
+          keywords,
+        };
+      })
+      .sort((a, b) => b.sessions - a.sessions || b.leads - a.leads);
 
-          markersRef.current.push(marker);
-        });
-
-        setMapLoaded(true);
-      } catch (err) {
-        console.error('Map init error:', err);
-        if (!cancelled) setMapError(err instanceof Error ? err.message : 'Map failed to load');
-      }
+    return {
+      name,
+      sessions: source.sessions,
+      leads: source.leads,
+      bounce: normalize(source.sessions, source.leads),
+      campaigns,
     };
+  });
+}
 
-    initMap();
-    return () => { cancelled = true; };
-  }, [apiKey, locations]);
+function pctBounce(sessions: number, bounce: number) {
+  if (!sessions) return '0%';
+  return `${Math.round((bounce / sessions) * 100)}%`;
+}
+
+function SankeyNode(props: any) {
+  const { x, y, width, height, payload } = props;
+  const label = payload?.name || '';
 
   return (
-    <div className="relative">
-      <div ref={mapRef} className="rounded-lg border border-white/[0.06] h-[380px]" style={{ backgroundColor: '#0a0a0f' }} />
-      {!mapLoaded && !mapError && (
-        <div className="absolute inset-0 flex items-center justify-center rounded-lg" style={{ backgroundColor: '#0a0a0f' }}>
-          <div className="text-center">
-            <RefreshCw className="w-5 h-5 text-novalyte-400 animate-spin mx-auto mb-2" />
-            <p className="text-[10px] text-slate-500">Loading map...</p>
-          </div>
-        </div>
-      )}
-      {mapError && (
-        <div className="absolute inset-0 flex items-center justify-center rounded-lg" style={{ backgroundColor: '#0a0a0f' }}>
-          <div className="text-center">
-            <MapPin className="w-6 h-6 text-red-400 mx-auto mb-2" />
-            <p className="text-xs text-red-400">{mapError}</p>
-          </div>
-        </div>
-      )}
-      {mapLoaded && locations.length === 0 && (
-        <div className="absolute inset-0 flex items-center justify-center rounded-lg pointer-events-none">
-          <div className="text-center bg-black/40 px-4 py-3 rounded-lg">
-            <Globe className="w-8 h-8 text-slate-700 mx-auto mb-2" />
-            <p className="text-xs text-slate-500">Awaiting traffic data</p>
-            <p className="text-[10px] text-slate-600 mt-1">Markers appear as visitors arrive with geo data</p>
-          </div>
-        </div>
-      )}
-      {/* Legend */}
-      {mapLoaded && locations.length > 0 && (
-        <div className="absolute bottom-3 left-3 bg-black/70 backdrop-blur-sm rounded-lg px-3 py-2 border border-white/[0.06]">
-          <div className="flex items-center gap-3 text-[9px] text-slate-400">
-            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-cyan-400 inline-block" /> With leads</span>
-            <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-cyan-300/50 inline-block" /> Visitors only</span>
-            <span>Larger = more traffic</span>
-          </div>
-        </div>
-      )}
+    <g>
+      <rect x={x} y={y} width={width} height={height} rx={4} fill="rgba(59,130,246,0.35)" stroke="rgba(147,197,253,0.7)" />
+      <text x={x + width + 8} y={y + height / 2} fill="#cbd5e1" fontSize={11} dominantBaseline="middle">
+        {label}
+      </text>
+    </g>
+  );
+}
+
+function SankeyFlowLink(props: any) {
+  const { sourceX, sourceY, targetX, targetY, linkWidth, payload } = props;
+  const isLead = String(payload?.target?.name || '').toLowerCase().includes('lead');
+  const midX = (sourceX + targetX) / 2;
+  const path = `M${sourceX},${sourceY} C${midX},${sourceY} ${midX},${targetY} ${targetX},${targetY}`;
+  const stroke = isLead ? 'rgba(34,197,94,0.9)' : 'rgba(248,113,113,0.85)';
+
+  return (
+    <path d={path} fill="none" stroke={stroke} strokeWidth={Math.max(linkWidth, 2)} strokeLinecap="round" strokeDasharray="9 7">
+      <animate attributeName="stroke-dashoffset" from="16" to="0" dur="1.1s" repeatCount="indefinite" />
+    </path>
+  );
+}
+
+function TrafficSourceFlow({ leads, pageEvents }: { leads: LeadWithAttribution[]; pageEvents: PageEvent[] }) {
+  const tree = useMemo(() => buildTrafficTree(leads, pageEvents), [leads, pageEvents]);
+  const sankeyData = useMemo(() => {
+    const activeSources = tree.filter(s => s.sessions > 0 || s.leads > 0);
+    const campaigns = activeSources.flatMap(s =>
+      s.campaigns.slice(0, 4).map(c => ({ ...c, source: s.name, key: `${s.name}::${c.name}` }))
+    );
+
+    const nodes: Array<{ name: string }> = [
+      ...activeSources.map(s => ({ name: s.name })),
+      ...campaigns.map(c => ({ name: c.key })),
+      { name: 'Lead' },
+      { name: 'Bounce' },
+    ];
+
+    const nodeIndex = new Map(nodes.map((n, i) => [n.name, i]));
+    const links: Array<{ source: number; target: number; value: number }> = [];
+
+    campaigns.forEach((campaign) => {
+      const sourceIndex = nodeIndex.get(campaign.source);
+      const campaignIndex = nodeIndex.get(campaign.key);
+      const leadIndex = nodeIndex.get('Lead');
+      const bounceIndex = nodeIndex.get('Bounce');
+      if (sourceIndex == null || campaignIndex == null || leadIndex == null || bounceIndex == null) return;
+
+      const inFlow = Math.max(campaign.sessions, campaign.leads);
+      if (inFlow > 0) links.push({ source: sourceIndex, target: campaignIndex, value: inFlow });
+      if (campaign.leads > 0) links.push({ source: campaignIndex, target: leadIndex, value: campaign.leads });
+      if (campaign.bounce > 0) links.push({ source: campaignIndex, target: bounceIndex, value: campaign.bounce });
+    });
+
+    return {
+      nodes: nodes.map(n => ({ name: n.name.includes('::') ? n.name.split('::')[1] : n.name })),
+      links,
+    };
+  }, [tree]);
+
+  return (
+    <div className="glass-card p-4 h-full">
+      <h2 className="text-sm font-semibold text-slate-200 mb-2">Source Sankey</h2>
+      <p className="text-[10px] text-slate-500 mb-3">Source → Campaign → Lead/Bounce</p>
+      <div className="h-[210px]">
+        <ResponsiveContainer width="100%" height="100%">
+          <Sankey
+            data={sankeyData as any}
+            nodePadding={16}
+            nodeWidth={12}
+            iterations={24}
+            margin={{ top: 8, right: 80, left: 8, bottom: 8 }}
+            node={SankeyNode}
+            link={SankeyFlowLink}
+          >
+            <RechartsTooltip
+              cursor={false}
+              contentStyle={{
+                background: 'rgba(2,6,23,0.94)',
+                border: '1px solid rgba(148,163,184,0.25)',
+                borderRadius: 10,
+                color: '#e2e8f0',
+              }}
+              formatter={(value: any) => [`${Number(value || 0)} sessions`, 'Flow']}
+            />
+          </Sankey>
+        </ResponsiveContainer>
+      </div>
     </div>
   );
 }
 
-/* ─── Detailed Traffic Sources Component ─── */
-
 function TrafficSourcesDetail({ leads, pageEvents }: { leads: LeadWithAttribution[]; pageEvents: PageEvent[] }) {
-  // Combine data from leads and page events for comprehensive source analysis
-  const allSources = useMemo(() => {
-    const sourceMap = new Map<string, { sessions: number; leads: number; conversions: number }>();
-    
-    // From page events (sessions)
-    const sessionSources = new Map<string, string>();
-    pageEvents.forEach(e => {
-      if (!sessionSources.has(e.session_id)) {
-        const source = e.gclid ? 'google / cpc' : 
-          e.utm_source && e.utm_medium ? `${e.utm_source} / ${e.utm_medium}` :
-          e.utm_source ? `${e.utm_source} / (none)` : 'direct / (none)';
-        sessionSources.set(e.session_id, source);
-      }
-    });
-    sessionSources.forEach(source => {
-      const ex = sourceMap.get(source) || { sessions: 0, leads: 0, conversions: 0 };
-      ex.sessions++;
-      sourceMap.set(source, ex);
-    });
-
-    // From leads
-    leads.forEach(l => {
-      const source = l.gclid ? 'google / cpc' :
-        l.utm_source && l.utm_medium ? `${l.utm_source} / ${l.utm_medium}` :
-        l.utm_source ? `${l.utm_source} / (none)` : 'direct / (none)';
-      const ex = sourceMap.get(source) || { sessions: 0, leads: 0, conversions: 0 };
-      ex.leads++;
-      if (l.status !== 'new') ex.conversions++;
-      sourceMap.set(source, ex);
-    });
-
-    return Array.from(sourceMap.entries())
-      .map(([source, data]) => ({ source, ...data }))
-      .sort((a, b) => b.leads - a.leads || b.sessions - a.sessions);
-  }, [leads, pageEvents]);
-
-  // UTM Campaigns breakdown
-  const campaigns = useMemo(() => {
-    const map = new Map<string, { sessions: number; leads: number }>();
-    const sessionCampaigns = new Map<string, string>();
-    pageEvents.forEach(e => {
-      if (e.utm_campaign && !sessionCampaigns.has(e.session_id)) {
-        sessionCampaigns.set(e.session_id, e.utm_campaign);
-      }
-    });
-    sessionCampaigns.forEach(campaign => {
-      const ex = map.get(campaign) || { sessions: 0, leads: 0 };
-      ex.sessions++;
-      map.set(campaign, ex);
-    });
-    leads.forEach(l => {
-      if (l.utm_campaign) {
-        const ex = map.get(l.utm_campaign) || { sessions: 0, leads: 0 };
-        ex.leads++;
-        map.set(l.utm_campaign, ex);
-      }
-    });
-    return Array.from(map.entries())
-      .map(([campaign, data]) => ({ campaign, ...data }))
-      .sort((a, b) => b.leads - a.leads || b.sessions - a.sessions)
-      .slice(0, 10);
-  }, [leads, pageEvents]);
-
-  // UTM Terms (keywords)
-  const keywords = useMemo(() => {
-    const map = new Map<string, { sessions: number; leads: number }>();
-    const sessionTerms = new Map<string, string>();
-    pageEvents.forEach(e => {
-      const term = (e.event_data as any)?.utm_term;
-      if (term && !sessionTerms.has(e.session_id)) {
-        sessionTerms.set(e.session_id, term);
-      }
-    });
-    sessionTerms.forEach(term => {
-      const ex = map.get(term) || { sessions: 0, leads: 0 };
-      ex.sessions++;
-      map.set(term, ex);
-    });
-    leads.forEach(l => {
-      if (l.utm_term) {
-        const ex = map.get(l.utm_term) || { sessions: 0, leads: 0 };
-        ex.leads++;
-        map.set(l.utm_term, ex);
-      }
-    });
-    return Array.from(map.entries())
-      .map(([keyword, data]) => ({ keyword, ...data }))
-      .sort((a, b) => b.leads - a.leads || b.sessions - a.sessions)
-      .slice(0, 10);
-  }, [leads, pageEvents]);
-
-  // Referrers
-  const referrers = useMemo(() => {
-    const map = new Map<string, { sessions: number; leads: number }>();
-    const sessionRefs = new Map<string, string>();
-    pageEvents.forEach(e => {
-      const ref = (e.event_data as any)?.referrer;
-      if (ref && !sessionRefs.has(e.session_id)) {
-        try {
-          const domain = new URL(ref).hostname.replace('www.', '');
-          sessionRefs.set(e.session_id, domain);
-        } catch { sessionRefs.set(e.session_id, ref); }
-      }
-    });
-    sessionRefs.forEach(ref => {
-      const ex = map.get(ref) || { sessions: 0, leads: 0 };
-      ex.sessions++;
-      map.set(ref, ex);
-    });
-    leads.forEach(l => {
-      if (l.referrer) {
-        try {
-          const domain = new URL(l.referrer).hostname.replace('www.', '');
-          const ex = map.get(domain) || { sessions: 0, leads: 0 };
-          ex.leads++;
-          map.set(domain, ex);
-        } catch {}
-      }
-    });
-    return Array.from(map.entries())
-      .map(([referrer, data]) => ({ referrer, ...data }))
-      .filter(r => r.referrer !== 'ads.novalyte.io' && r.referrer !== 'novalyte.io')
-      .sort((a, b) => b.leads - a.leads || b.sessions - a.sessions)
-      .slice(0, 8);
-  }, [leads, pageEvents]);
-
-  // Landing pages
-  const landingPages = useMemo(() => {
-    const map = new Map<string, { sessions: number; leads: number }>();
-    const sessionPages = new Map<string, string>();
-    pageEvents.forEach(e => {
-      const page = (e.event_data as any)?.landing_page || (e.event_data as any)?.page;
-      if (page && !sessionPages.has(e.session_id)) {
-        sessionPages.set(e.session_id, page);
-      }
-    });
-    sessionPages.forEach(page => {
-      const ex = map.get(page) || { sessions: 0, leads: 0 };
-      ex.sessions++;
-      map.set(page, ex);
-    });
-    leads.forEach(l => {
-      if (l.landing_page) {
-        const ex = map.get(l.landing_page) || { sessions: 0, leads: 0 };
-        ex.leads++;
-        map.set(l.landing_page, ex);
-      }
-    });
-    return Array.from(map.entries())
-      .map(([page, data]) => ({ page, ...data }))
-      .sort((a, b) => b.leads - a.leads || b.sessions - a.sessions)
-      .slice(0, 6);
-  }, [leads, pageEvents]);
+  const tree = useMemo(() => buildTrafficTree(leads, pageEvents), [leads, pageEvents]);
+  const [openSources, setOpenSources] = useState<Record<string, boolean>>({});
+  const [openCampaigns, setOpenCampaigns] = useState<Record<string, boolean>>({});
 
   return (
     <div className="glass-card p-4">
       <h2 className="text-sm font-semibold text-slate-200 mb-4 flex items-center gap-2">
         <Globe className="w-4 h-4 text-novalyte-400" />
-        Traffic Sources Detail
-        <span className="text-[10px] text-slate-500 font-normal ml-1">Where your visitors come from</span>
+        Traffic Sources Drill-Down
+        <span className="text-[10px] text-slate-500 font-normal ml-1">Expand Source → Campaign → Keyword</span>
       </h2>
 
-      <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Source / Medium */}
-        <div>
-          <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium mb-2">Source / Medium</p>
-          <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
-            {allSources.length === 0 && <p className="text-[10px] text-slate-600 py-2">No data yet</p>}
-            {allSources.slice(0, 8).map(s => {
-              return (
-                <div key={s.source} className="flex items-center gap-2 p-1.5 bg-white/[0.02] rounded-lg">
-                  <div className={cn('w-1.5 h-1.5 rounded-full shrink-0',
-                    s.source.includes('google') ? 'bg-emerald-400' :
-                    s.source.includes('facebook') || s.source.includes('meta') ? 'bg-blue-400' :
-                    s.source === 'direct / (none)' ? 'bg-slate-500' : 'bg-amber-400'
-                  )} />
-                  <span className="text-[10px] text-slate-300 flex-1 truncate">{s.source}</span>
-                  <span className="text-[9px] text-slate-500">{s.sessions}s</span>
-                  {s.leads > 0 && <span className="text-[9px] text-novalyte-400 font-semibold">{s.leads}L</span>}
-                </div>
-              );
-            })}
-          </div>
+      <div className="rounded-xl border border-white/[0.06] overflow-hidden">
+        <div className="grid grid-cols-[1fr_100px_110px_80px] bg-white/[0.03] px-3 py-2 text-[10px] uppercase tracking-wider text-slate-500">
+          <span>Channel</span>
+          <span className="text-right">Sessions</span>
+          <span className="text-right">Bounce Rate</span>
+          <span className="text-right">Leads</span>
         </div>
 
-        {/* Campaigns */}
-        <div>
-          <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium mb-2">Campaigns</p>
-          <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
-            {campaigns.length === 0 && <p className="text-[10px] text-slate-600 py-2">No UTM campaigns tracked</p>}
-            {campaigns.map(c => (
-              <div key={c.campaign} className="flex items-center gap-2 p-1.5 bg-white/[0.02] rounded-lg">
-                <span className="text-[10px] text-slate-300 flex-1 truncate">{c.campaign}</span>
-                <span className="text-[9px] text-slate-500">{c.sessions}s</span>
-                {c.leads > 0 && <span className="text-[9px] text-novalyte-400 font-semibold">{c.leads}L</span>}
-              </div>
-            ))}
-          </div>
-        </div>
+        <div className="divide-y divide-white/[0.04]">
+          {tree.map((source) => {
+            const sourceOpen = !!openSources[source.name];
+            return (
+              <div key={source.name}>
+                <button
+                  onClick={() => setOpenSources(prev => ({ ...prev, [source.name]: !prev[source.name] }))}
+                  className="w-full grid grid-cols-[1fr_100px_110px_80px] px-3 py-2 text-sm text-left hover:bg-white/[0.02] transition-colors"
+                >
+                  <span className="flex items-center gap-2 text-slate-200 font-medium">
+                    {sourceOpen ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronRight className="w-4 h-4 text-slate-500" />}
+                    {source.name}
+                  </span>
+                  <span className="text-right text-slate-300 tabular-nums">{source.sessions}</span>
+                  <span className="text-right text-slate-400 tabular-nums">{pctBounce(source.sessions, source.bounce)}</span>
+                  <span className="text-right text-emerald-400 tabular-nums font-semibold">{source.leads}</span>
+                </button>
 
-        {/* Keywords */}
-        <div>
-          <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium mb-2">Keywords (utm_term)</p>
-          <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
-            {keywords.length === 0 && <p className="text-[10px] text-slate-600 py-2">No keywords tracked</p>}
-            {keywords.map(k => (
-              <div key={k.keyword} className="flex items-center gap-2 p-1.5 bg-white/[0.02] rounded-lg">
-                <span className="text-[10px] text-slate-300 flex-1 truncate">{k.keyword}</span>
-                <span className="text-[9px] text-slate-500">{k.sessions}s</span>
-                {k.leads > 0 && <span className="text-[9px] text-novalyte-400 font-semibold">{k.leads}L</span>}
-              </div>
-            ))}
-          </div>
-        </div>
+                {sourceOpen && source.campaigns.map((campaign) => {
+                  const key = `${source.name}::${campaign.name}`;
+                  const campaignOpen = !!openCampaigns[key];
+                  return (
+                    <div key={key}>
+                      <button
+                        onClick={() => setOpenCampaigns(prev => ({ ...prev, [key]: !prev[key] }))}
+                        className="w-full grid grid-cols-[1fr_100px_110px_80px] px-3 py-2 text-xs text-left bg-white/[0.015] hover:bg-white/[0.03] transition-colors"
+                      >
+                        <span className="flex items-center gap-2 text-slate-300 pl-6">
+                          {campaignOpen ? <ChevronDown className="w-3.5 h-3.5 text-slate-500" /> : <ChevronRight className="w-3.5 h-3.5 text-slate-600" />}
+                          {campaign.name}
+                        </span>
+                        <span className="text-right text-slate-400 tabular-nums">{campaign.sessions}</span>
+                        <span className="text-right text-slate-500 tabular-nums">{pctBounce(campaign.sessions, campaign.bounce)}</span>
+                        <span className="text-right text-emerald-400 tabular-nums">{campaign.leads}</span>
+                      </button>
 
-        {/* Referrers */}
-        <div>
-          <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium mb-2">Referrers</p>
-          <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
-            {referrers.length === 0 && <p className="text-[10px] text-slate-600 py-2">No referrer data</p>}
-            {referrers.map(r => (
-              <div key={r.referrer} className="flex items-center gap-2 p-1.5 bg-white/[0.02] rounded-lg">
-                <span className="text-[10px] text-slate-300 flex-1 truncate">{r.referrer}</span>
-                <span className="text-[9px] text-slate-500">{r.sessions}s</span>
-                {r.leads > 0 && <span className="text-[9px] text-novalyte-400 font-semibold">{r.leads}L</span>}
+                      {campaignOpen && campaign.keywords.map((keyword) => (
+                        <div key={`${key}::${keyword.name}`} className="grid grid-cols-[1fr_100px_110px_80px] px-3 py-2 text-xs bg-black/20">
+                          <span className="text-slate-400 pl-12 truncate">{keyword.name}</span>
+                          <span className="text-right text-slate-500 tabular-nums">{keyword.sessions}</span>
+                          <span className="text-right text-slate-600 tabular-nums">{pctBounce(keyword.sessions, keyword.bounce)}</span>
+                          <span className="text-right text-emerald-500 tabular-nums">{keyword.leads}</span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
               </div>
-            ))}
-          </div>
+            );
+          })}
         </div>
       </div>
-
-      {/* Landing Pages Row */}
-      {landingPages.length > 0 && (
-        <div className="mt-4 pt-4 border-t border-white/[0.04]">
-          <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium mb-2">Landing Pages</p>
-          <div className="flex flex-wrap gap-2">
-            {landingPages.map(p => (
-              <div key={p.page} className="px-2 py-1 bg-white/[0.03] rounded-lg border border-white/[0.04]">
-                <span className="text-[10px] text-slate-300">{p.page}</span>
-                <span className="text-[9px] text-slate-500 ml-2">{p.sessions}s</span>
-                {p.leads > 0 && <span className="text-[9px] text-novalyte-400 font-semibold ml-1">{p.leads}L</span>}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

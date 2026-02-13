@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback } from 'react';
 import {
   LayoutDashboard, TrendingUp, Building2, Users, Phone,
-  Settings, Cloud, CloudOff, RefreshCw, Brain, ChevronLeft,
-  ChevronRight, DownloadCloud, Trash2, Sparkles, Mail, DollarSign,
+  Cloud, CloudOff, RefreshCw, Brain, ChevronLeft,
+  ChevronRight, DownloadCloud, Sparkles, Mail, DollarSign,
   Menu, X, UserCheck, Lock, Eye, EyeOff, BarChart3, ArrowRight, LogOut,
+  ShieldAlert, Rocket,
 } from 'lucide-react';
-import { startSession, trackPageView, trackAction, setupSessionFlush, getCurrentSession, endSession, forceLogoutAll, type SessionInfo } from './services/sessionTracker';
+import { startSession, trackPageView, trackAction, setupSessionFlush, getCurrentSession, endSession, forceLogoutAll, requestLiveAccessCode, submitGuestLogoutFeedback, type SessionInfo } from './services/sessionTracker';
 import { useAppStore } from './stores/appStore';
 import { cn } from './utils/cn';
 import Dashboard from './components/Dashboard';
@@ -18,6 +19,7 @@ import RevenueForecastPage from './components/RevenueForecast';
 import PatientLeads from './components/PatientLeads';
 import AdAnalytics from './components/AdAnalytics';
 import AIEngine from './components/AIEngine';
+import EngineCopilot from './components/EngineCopilot';
 
 const navItems = [
   { id: 'dashboard', label: 'Command Center', shortLabel: 'Home', icon: LayoutDashboard, badge: null },
@@ -42,6 +44,7 @@ function LoginScreen({ onAuth }: { onAuth: (session: SessionInfo) => void }) {
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState<'code' | 'name'>('code');
   const [guestName, setGuestName] = useState('');
+  const [guestCompany, setGuestCompany] = useState('');
 
   const handleCodeSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -66,9 +69,9 @@ function LoginScreen({ onAuth }: { onAuth: (session: SessionInfo) => void }) {
 
   const handleNameSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!guestName.trim()) return;
+    if (!guestName.trim() || !guestCompany.trim()) return;
     setLoading(true);
-    const session = await startSession('guest', GUEST_CODE, guestName.trim());
+    const session = await startSession('guest', GUEST_CODE, guestName.trim(), guestCompany.trim());
     sessionStorage.setItem('novalyte-auth', 'true');
     onAuth(session);
     setLoading(false);
@@ -138,7 +141,14 @@ function LoginScreen({ onAuth }: { onAuth: (session: SessionInfo) => void }) {
                 autoFocus
                 className="w-full px-4 py-3 rounded-lg bg-white/[0.03] border border-white/[0.08] focus:border-novalyte-500/40 text-center text-lg text-slate-200 placeholder:text-slate-600 outline-none transition-all"
               />
-              <button type="submit" disabled={!guestName.trim() || loading}
+              <input
+                type="text"
+                value={guestCompany}
+                onChange={e => setGuestCompany(e.target.value)}
+                placeholder="Company"
+                className="w-full px-4 py-3 rounded-lg bg-white/[0.03] border border-white/[0.08] focus:border-novalyte-500/40 text-center text-lg text-slate-200 placeholder:text-slate-600 outline-none transition-all"
+              />
+              <button type="submit" disabled={!guestName.trim() || !guestCompany.trim() || loading}
                 className="w-full py-3 rounded-lg font-medium text-sm transition-all bg-[#06B6D4] text-[#000000] hover:bg-[#22D3EE] disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
                 {loading ? 'Setting up...' : <><ArrowRight className="w-4 h-4" /> Enter Dashboard</>}
               </button>
@@ -160,18 +170,37 @@ function App() {
     initSupabase, pushToSupabase, contacts, clinics, keywordTrends, callHistory, sentEmails, markets,
   } = useAppStore();
 
-  const [collapsed, setCollapsed] = useState(false);
-  const [showExportMenu, setShowExportMenu] = useState(false);
+  const [isSidebarHovered, setIsSidebarHovered] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [authenticated, setAuthenticated] = useState(() => sessionStorage.getItem('novalyte-auth') === 'true');
   const [sessionInfo, setSessionInfo] = useState<SessionInfo | null>(() => getCurrentSession());
+  const [engineMode, setEngineMode] = useState<'demo' | 'live'>(() => (sessionStorage.getItem('novalyte-mode') as 'demo' | 'live') || 'live');
+  const [showDemoNotice, setShowDemoNotice] = useState(false);
+  const [showLiveModal, setShowLiveModal] = useState(false);
+  const [liveAccessReason, setLiveAccessReason] = useState('');
+  const [liveRequestSent, setLiveRequestSent] = useState(false);
+  const [showAccessCodeModal, setShowAccessCodeModal] = useState(false);
+  const [liveCode, setLiveCode] = useState('');
+  const [liveCodeError, setLiveCodeError] = useState(false);
+  const [showGuestFeedbackModal, setShowGuestFeedbackModal] = useState(false);
+  const [guestFeedback, setGuestFeedback] = useState('');
+  const [guestFeedbackError, setGuestFeedbackError] = useState(false);
+  const [submittingFeedback, setSubmittingFeedback] = useState(false);
+  const isAdmin = sessionInfo?.role === 'admin';
+  const isGuest2104 = sessionInfo?.role === 'guest' && sessionInfo?.code === GUEST_CODE;
+  const canRunLive = isAdmin || engineMode === 'live';
 
-  useEffect(() => { initSupabase(); }, [initSupabase]);
+  useEffect(() => {
+    if (!authenticated || !sessionInfo) return;
+    if (!canRunLive) return;
+    initSupabase();
+  }, [initSupabase, authenticated, sessionInfo, canRunLive]);
 
   const doLogout = useCallback(() => {
     endSession();
     sessionStorage.removeItem('novalyte-auth');
     sessionStorage.removeItem('novalyte-session-info');
+    sessionStorage.removeItem('novalyte-mode');
     setAuthenticated(false);
     setSessionInfo(null);
   }, []);
@@ -192,7 +221,18 @@ function App() {
   }, [currentView, authenticated, sessionInfo]);
 
   if (!authenticated) {
-    return <LoginScreen onAuth={(session) => { setAuthenticated(true); setSessionInfo(session); }} />;
+    return <LoginScreen onAuth={(session) => {
+      setAuthenticated(true);
+      setSessionInfo(session);
+      if (session.role === 'guest' && session.code === GUEST_CODE) {
+        setEngineMode('demo');
+        sessionStorage.setItem('novalyte-mode', 'demo');
+        setShowDemoNotice(true);
+      } else {
+        setEngineMode('live');
+        sessionStorage.setItem('novalyte-mode', 'live');
+      }
+    }} />;
   }
 
   const getBadgeCount = (badge: string | null) => {
@@ -245,16 +285,13 @@ function App() {
       a.remove();
       URL.revokeObjectURL(url);
     } catch { alert('Export failed'); }
-    setShowExportMenu(false);
-  };
-
-  const handleClear = () => {
-    trackAction('clear', 'Factory reset — cleared all local data');
-    if (!confirm('⚠️ Factory Reset: This will clear ALL data across every tab and reload the app. Continue?')) return;
-    useAppStore.getState().factoryReset();
   };
 
   const handleLogout = () => {
+    if (isGuest2104) {
+      setShowGuestFeedbackModal(true);
+      return;
+    }
     trackAction('logout', 'User logged out');
     doLogout();
   };
@@ -268,16 +305,50 @@ function App() {
     }
   };
 
-  const isAdmin = sessionInfo?.role === 'admin';
-  const displayName = sessionInfo?.name?.trim() || 'Guest';
+  const displayName = [sessionInfo?.name?.trim(), sessionInfo?.company?.trim()].filter(Boolean).join(' · ') || 'Guest';
+  const collapsed = !isSidebarHovered;
 
   const handleMobileNav = (id: string) => {
     setCurrentView(id as typeof currentView);
     setMobileMenuOpen(false);
   };
 
+  const handleGoLive = () => {
+    if (isAdmin) {
+      setEngineMode('live');
+      sessionStorage.setItem('novalyte-mode', 'live');
+      return;
+    }
+    setShowLiveModal(true);
+    setLiveRequestSent(false);
+  };
+
+  const submitLiveAccessRequest = async () => {
+    try {
+      await requestLiveAccessCode(liveAccessReason);
+      setLiveRequestSent(true);
+      trackAction('live_access_request', 'Requested live access code from Jamil');
+    } catch {
+      setLiveRequestSent(false);
+    }
+  };
+
+  const submitLiveCode = () => {
+    if (liveCode.trim() !== ADMIN_CODE) {
+      setLiveCodeError(true);
+      return;
+    }
+    setLiveCodeError(false);
+    setEngineMode('live');
+    sessionStorage.setItem('novalyte-mode', 'live');
+    setShowAccessCodeModal(false);
+    setShowLiveModal(false);
+    setLiveCode('');
+    trackAction('mode_change', 'Upgraded to Live Mode with access code');
+  };
+
   return (
-    <div className="flex h-screen bg-black">
+    <div className="relative flex h-screen bg-black">
 
       {/* ═══ Mobile Top Bar — visible < lg ═══ */}
       <div className="lg:hidden fixed top-0 left-0 right-0 z-50 bg-black/95 backdrop-blur-xl border-b border-white/[0.06] px-4 py-3 flex items-center justify-between safe-top">
@@ -294,12 +365,30 @@ function App() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              if (engineMode === 'live') {
+                setEngineMode('demo');
+                sessionStorage.setItem('novalyte-mode', 'demo');
+                trackAction('mode_change', 'Switched to Demo Mode');
+                return;
+              }
+              handleGoLive();
+            }}
+            className={cn(
+              'text-[10px] px-2 py-1 rounded-full border',
+              engineMode === 'live' ? 'text-emerald-300 border-emerald-400/40 bg-emerald-500/10' : 'text-amber-300 border-amber-400/40 bg-amber-500/10'
+            )}
+            title="Toggle Demo / Live"
+          >
+            {engineMode === 'live' ? 'LIVE' : 'DEMO'}
+          </button>
           <span className="text-[11px] text-slate-300 max-w-[120px] truncate" title={`Welcome, ${displayName}`}>
             Welcome, {displayName}
           </span>
           <button
             onClick={() => pushToSupabase()}
-            disabled={!supabaseReady || isSyncing}
+            disabled={!supabaseReady || isSyncing || !canRunLive}
             className="p-2 rounded-lg hover:bg-white/5"
           >
             {isSyncing ? <RefreshCw className="w-4 h-4 text-emerald-400 animate-spin" /> :
@@ -313,7 +402,38 @@ function App() {
       </div>
 
       {/* Desktop top-right welcome */}
-      <div className="hidden lg:flex fixed top-4 right-4 z-30 items-center rounded-lg border border-white/[0.08] bg-black/70 px-3 py-2 backdrop-blur-xl">
+      <div className="hidden lg:flex fixed top-4 right-4 z-30 items-center gap-2 rounded-lg border border-white/[0.08] bg-black/70 px-3 py-2 backdrop-blur-xl">
+        <button
+          onClick={() => {
+            if (engineMode === 'live') {
+              setEngineMode('demo');
+              sessionStorage.setItem('novalyte-mode', 'demo');
+              trackAction('mode_change', 'Switched to Demo Mode');
+              return;
+            }
+            handleGoLive();
+          }}
+          className={cn(
+            'text-[10px] px-2 py-1 rounded-full border inline-flex items-center gap-1',
+            engineMode === 'live'
+              ? 'text-emerald-300 border-emerald-400/50 bg-emerald-500/10'
+              : 'text-amber-300 border-amber-400/50 bg-amber-500/10'
+          )}
+        >
+          <Rocket className="w-3 h-3" /> {engineMode === 'live' ? 'LIVE' : 'DEMO'}
+        </button>
+        {!isAdmin && (
+          <button
+            onClick={() => {
+              setShowAccessCodeModal(true);
+              setLiveCode('');
+              setLiveCodeError(false);
+            }}
+            className="text-[10px] px-2 py-1 rounded-full border border-cyan-400/50 bg-cyan-500/10 text-cyan-200"
+          >
+            I have access code
+          </button>
+        )}
         <span className="text-xs text-slate-300">Welcome, {displayName}</span>
       </div>
 
@@ -351,7 +471,7 @@ function App() {
               <button onClick={handleLogout} className="flex-1 btn btn-secondary gap-2 text-xs justify-center">
                 <LogOut className="w-3.5 h-3.5" /> Logout
               </button>
-              {isAdmin && (
+              {isAdmin && !isGuest2104 && (
                 <button onClick={handleForceLogoutAll} className="flex-1 btn btn-danger gap-2 text-xs justify-center">
                   <LogOut className="w-3.5 h-3.5" /> Logout All
                 </button>
@@ -363,9 +483,12 @@ function App() {
 
       {/* ═══ Desktop Sidebar — hidden < lg ═══ */}
       <aside className={cn(
-        'hidden lg:flex bg-black text-white flex-col transition-all duration-300 ease-in-out shrink-0',
-        collapsed ? 'w-[68px]' : 'w-[240px]'
-      )}>
+        'hidden lg:flex fixed left-0 top-0 bottom-0 z-40 bg-black/95 backdrop-blur-xl text-white flex-col transition-all duration-300 ease-in-out border-r border-white/[0.06]',
+        collapsed ? 'w-16' : 'w-64'
+      )}
+        onMouseEnter={() => setIsSidebarHovered(true)}
+        onMouseLeave={() => setIsSidebarHovered(false)}
+      >
         {/* Logo */}
         <div className={cn('border-b border-white/5 flex items-center', collapsed ? 'px-3 py-4 justify-center' : 'px-5 py-5')}>
           <div className="w-9 h-9 rounded-full border-2 border-novalyte-400 bg-black flex items-center justify-center relative shrink-0 shadow-lg shadow-novalyte-500/20">
@@ -446,7 +569,7 @@ function App() {
           {/* Sync */}
           <button
             onClick={() => pushToSupabase()}
-            disabled={!supabaseReady || isSyncing}
+            disabled={!supabaseReady || isSyncing || !canRunLive}
             title={collapsed ? (supabaseReady ? 'Sync to Cloud' : 'Cloud Offline') : undefined}
             className={cn(
               'w-full flex items-center gap-2.5 rounded-lg text-[12px] font-medium transition-colors',
@@ -462,57 +585,35 @@ function App() {
             {!collapsed && (isSyncing ? 'Syncing...' : supabaseReady ? 'Sync to Cloud' : 'Cloud Offline')}
           </button>
 
-          {/* Export / Clear */}
-          <div className="relative">
-            <button
-              onClick={() => setShowExportMenu(!showExportMenu)}
-              title={collapsed ? 'Tools' : undefined}
-              className={cn(
-                'w-full flex items-center gap-2.5 rounded-lg text-[12px] font-medium text-slate-500 hover:bg-white/5 hover:text-slate-300 transition-colors',
-                collapsed ? 'px-0 py-2 justify-center' : 'px-3 py-2'
-              )}
-            >
-              <Settings className="w-4 h-4 shrink-0" />
-              {!collapsed && 'Tools'}
-            </button>
-            {showExportMenu && (
-              <div className={cn('absolute bottom-full mb-1 bg-black border border-white/10 rounded-lg shadow-xl z-50 py-1 min-w-[160px]',
-                collapsed ? 'left-full ml-2' : 'left-0'
-              )}>
-                <button onClick={handleExport} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-300 hover:bg-white/5">
-                  <DownloadCloud className="w-3.5 h-3.5" /> Export Data
-                </button>
-                <button onClick={handleClear} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-red-400 hover:bg-white/5">
-                  <Trash2 className="w-3.5 h-3.5" /> Clear All Data
-                </button>
-                <div className="border-t border-white/[0.06] my-1" />
-                <button onClick={handleLogout} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-300 hover:bg-white/5">
-                  <LogOut className="w-3.5 h-3.5" /> Logout
-                </button>
-                {isAdmin && (
-                  <button onClick={handleForceLogoutAll} className="w-full flex items-center gap-2 px-3 py-2 text-xs text-red-400 hover:bg-white/5">
-                    <LogOut className="w-3.5 h-3.5" /> Logout All Sessions
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Collapse toggle */}
           <button
-            onClick={() => setCollapsed(!collapsed)}
+            onClick={handleLogout}
+            title={collapsed ? 'Logout' : undefined}
             className={cn(
-              'w-full flex items-center gap-2.5 rounded-lg text-[12px] font-medium text-slate-600 hover:bg-white/5 hover:text-slate-400 transition-colors',
+              'w-full flex items-center gap-2.5 rounded-lg text-[12px] font-medium text-slate-300 hover:bg-white/5 transition-colors',
               collapsed ? 'px-0 py-2 justify-center' : 'px-3 py-2'
             )}
           >
-            {collapsed ? <ChevronRight className="w-4 h-4" /> : <><ChevronLeft className="w-4 h-4 shrink-0" /> Collapse</>}
+            <LogOut className="w-4 h-4 shrink-0" />
+            {!collapsed && 'Logout'}
           </button>
+
+          <div className={cn(
+            'w-full flex items-center gap-2.5 rounded-lg text-[12px] font-medium text-slate-600',
+            collapsed ? 'px-0 py-2 justify-center' : 'px-3 py-2'
+          )}>
+            {collapsed ? <ChevronRight className="w-4 h-4" /> : <><ChevronLeft className="w-4 h-4 shrink-0" /> Stealth Sidebar</>}
+          </div>
         </div>
       </aside>
 
+      {!canRunLive && (
+        <div className="fixed left-1/2 -translate-x-1/2 top-[70px] lg:top-3 z-50 rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200 backdrop-blur-xl">
+          Demo Mode Active: Live actions are locked. Use Go Live to request live access from Jamil.
+        </div>
+      )}
+
       {/* ═══ Main Content ═══ */}
-      <main className="flex-1 overflow-auto pt-[60px] pb-[72px] lg:pt-0 lg:pb-0">
+      <main className="flex-1 overflow-auto pt-[60px] pb-[72px] lg:pt-0 lg:pb-0 lg:pl-16">
         {renderView()}
       </main>
 
@@ -554,8 +655,147 @@ function App() {
         </div>
       </nav>
 
-      {/* Click-away for export menu */}
-      {showExportMenu && <div className="fixed inset-0 z-40" onClick={() => setShowExportMenu(false)} />}
+      {showDemoNotice && (
+        <div className="fixed inset-0 z-[80] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-lg rounded-2xl border border-cyan-400/40 bg-[#030712]/95 p-5">
+            <div className="flex items-start gap-3">
+              <ShieldAlert className="w-5 h-5 text-cyan-300 shrink-0 mt-0.5" />
+              <div>
+                <h3 className="text-sm font-semibold text-slate-100">Intelligent Dashboard Is Live</h3>
+                <p className="text-xs text-slate-300 mt-2 leading-relaxed">
+                  This dashboard is connected to live Google Ads data streams. Do not run live activity from guest access.
+                  Start in <span className="text-amber-300 font-semibold">Demo Mode</span> from the top-right by your name.
+                  If authorized, click <span className="text-emerald-300 font-semibold">Go Live</span> and request live access from Jamil.
+                </p>
+                <button
+                  onClick={() => setShowDemoNotice(false)}
+                  className="mt-4 px-3 py-2 rounded-lg bg-cyan-500/20 border border-cyan-400/40 text-cyan-200 text-xs font-medium"
+                >
+                  Continue In Demo
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showLiveModal && (
+        <div className="fixed inset-0 z-[90] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-2xl border border-emerald-400/40 bg-[#030712]/95 p-5">
+            <h3 className="text-sm font-semibold text-slate-100">Request Go Live Access</h3>
+            <p className="text-xs text-slate-400 mt-1">Demo users cannot self-activate live mode. Request access from Jamil.</p>
+            <div className="mt-4 space-y-2">
+              <button
+                onClick={submitLiveAccessRequest}
+                className="w-full px-3 py-2 rounded-lg text-xs text-cyan-200 border border-cyan-400/40 bg-cyan-500/10"
+              >
+                Request live access code from Jamil
+              </button>
+              <button
+                onClick={() => {
+                  setShowAccessCodeModal(true);
+                  setLiveCode('');
+                  setLiveCodeError(false);
+                }}
+                className="w-full px-3 py-2 rounded-lg text-xs text-emerald-200 border border-emerald-400/40 bg-emerald-500/15"
+              >
+                I have access code
+              </button>
+              <textarea
+                value={liveAccessReason}
+                onChange={(e) => setLiveAccessReason(e.target.value)}
+                rows={2}
+                placeholder="Optional: Why do you want to go live?"
+                className="w-full px-3 py-2 rounded-lg bg-white/[0.03] border border-white/[0.1] text-slate-200 text-xs outline-none focus:border-cyan-400/40 resize-none"
+              />
+              {liveRequestSent && (
+                <p className="text-[11px] text-emerald-300">Request sent to Jamil on Slack.</p>
+              )}
+              <p className="text-[11px] text-slate-400">
+                Need faster access? Text <span className="text-cyan-300 font-semibold">415-918-1995</span>.
+              </p>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setShowLiveModal(false)} className="px-3 py-2 rounded-lg text-xs text-slate-400 border border-white/[0.1]">Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAccessCodeModal && (
+        <div className="fixed inset-0 z-[96] bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-sm rounded-2xl border border-emerald-400/40 bg-[#030712]/95 p-5">
+            <h3 className="text-sm font-semibold text-slate-100">Enter Access Code</h3>
+            <p className="text-xs text-slate-400 mt-1">Provided by Jamil only.</p>
+            <input
+              value={liveCode}
+              onChange={(e) => { setLiveCode(e.target.value); setLiveCodeError(false); }}
+              placeholder="Access code"
+              className={cn(
+                'mt-4 w-full px-3 py-2 rounded-lg bg-white/[0.03] border text-slate-200 outline-none',
+                liveCodeError ? 'border-red-500/50' : 'border-white/[0.1] focus:border-emerald-400/50'
+              )}
+            />
+            {liveCodeError && <p className="text-[11px] text-red-400 mt-2">Invalid access code</p>}
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setShowAccessCodeModal(false)} className="px-3 py-2 rounded-lg text-xs text-slate-400 border border-white/[0.1]">Close</button>
+              <button onClick={submitLiveCode} className="px-3 py-2 rounded-lg text-xs text-emerald-200 border border-emerald-400/40 bg-emerald-500/10">Go Live</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showGuestFeedbackModal && (
+        <div className="fixed inset-0 z-[95] bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-lg rounded-2xl border border-cyan-400/40 bg-[#030712]/95 p-5">
+            <h3 className="text-sm font-semibold text-slate-100">Before Logout: Mandatory Feedback</h3>
+            <p className="text-xs text-slate-400 mt-1">Please give your honest feedback (max 1000 characters).</p>
+            <textarea
+              value={guestFeedback}
+              onChange={(e) => {
+                setGuestFeedback(e.target.value.slice(0, 1000));
+                setGuestFeedbackError(false);
+              }}
+              rows={6}
+              placeholder="Share what worked, what was confusing, and what should improve..."
+              className={cn(
+                'mt-4 w-full px-3 py-2 rounded-lg bg-white/[0.03] border text-slate-200 text-xs outline-none resize-none',
+                guestFeedbackError ? 'border-red-500/50' : 'border-white/[0.1] focus:border-cyan-400/40'
+              )}
+            />
+            <div className="mt-1 text-[10px] text-slate-500 text-right">{guestFeedback.length}/1000</div>
+            {guestFeedbackError && <p className="text-[11px] text-red-400 mt-2">Feedback is required before logout.</p>}
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setShowGuestFeedbackModal(false)} className="px-3 py-2 rounded-lg text-xs text-slate-400 border border-white/[0.1]">Stay Logged In</button>
+              <button
+                disabled={submittingFeedback}
+                onClick={async () => {
+                  const text = guestFeedback.trim();
+                  if (!text) {
+                    setGuestFeedbackError(true);
+                    return;
+                  }
+                  setSubmittingFeedback(true);
+                  try {
+                    await submitGuestLogoutFeedback(text);
+                  } finally {
+                    setSubmittingFeedback(false);
+                  }
+                  trackAction('logout_feedback', 'Submitted mandatory guest feedback');
+                  trackAction('logout', 'User logged out');
+                  setShowGuestFeedbackModal(false);
+                  doLogout();
+                }}
+                className="px-3 py-2 rounded-lg text-xs text-cyan-200 border border-cyan-400/40 bg-cyan-500/10 disabled:opacity-40"
+              >
+                {submittingFeedback ? 'Sending...' : 'Submit & Logout'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <EngineCopilot currentView={currentView} mode={engineMode} />
     </div>
   );
 }
