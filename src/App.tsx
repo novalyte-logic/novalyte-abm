@@ -269,6 +269,7 @@ function App() {
   };
 
   const isAdmin = sessionInfo?.role === 'admin';
+  const displayName = sessionInfo?.name?.trim() || 'Guest';
 
   const handleMobileNav = (id: string) => {
     setCurrentView(id as typeof currentView);
@@ -293,6 +294,9 @@ function App() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <span className="text-[11px] text-slate-300 max-w-[120px] truncate" title={`Welcome, ${displayName}`}>
+            Welcome, {displayName}
+          </span>
           <button
             onClick={() => pushToSupabase()}
             disabled={!supabaseReady || isSyncing}
@@ -306,6 +310,11 @@ function App() {
             {mobileMenuOpen ? <X className="w-5 h-5 text-slate-300" /> : <Menu className="w-5 h-5 text-slate-300" />}
           </button>
         </div>
+      </div>
+
+      {/* Desktop top-right welcome */}
+      <div className="hidden lg:flex fixed top-4 right-4 z-30 items-center rounded-lg border border-white/[0.08] bg-black/70 px-3 py-2 backdrop-blur-xl">
+        <span className="text-xs text-slate-300">Welcome, {displayName}</span>
       </div>
 
       {/* ═══ Mobile Slide-Down Menu ═══ */}

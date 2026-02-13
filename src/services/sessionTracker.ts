@@ -18,6 +18,7 @@ export interface SessionInfo {
 
 const SESSION_KEY = 'novalyte-session-info';
 const SLACK_WEBHOOK = import.meta.env.VITE_SLACK_WEBHOOK_URL || '';
+const GUEST_CODE = '2104';
 
 function generateId(): string {
   return `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -133,7 +134,8 @@ async function sendSlackAlert(session: SessionInfo) {
     return;
   }
 
-  const isGuest = session.role === 'guest';
+  const isGuest = session.role === 'guest' || session.code === GUEST_CODE;
+  const guestName = (session.name || '').trim() || 'Guest';
   const emoji = isGuest ? '🚨' : '🔑';
   const roleLabel = isGuest ? 'YC Guest' : 'Admin';
   const time = new Date(session.loginTime).toLocaleString('en-US', {
@@ -141,39 +143,47 @@ async function sendSlackAlert(session: SessionInfo) {
     hour: 'numeric', minute: '2-digit', hour12: true,
   });
 
-  const payload = {
-    text: `${emoji} *Novalyte Dashboard Login*`,
-    blocks: [
-      {
-        type: 'header',
-        text: { type: 'plain_text', text: `${emoji} ${isGuest ? 'YC Guest Login Alert' : 'Admin Login'}`, emoji: true },
-      },
-      {
-        type: 'section',
-        fields: [
-          { type: 'mrkdwn', text: `*Who:*\n${session.name || 'Jamil (Admin)'}` },
-          { type: 'mrkdwn', text: `*Role:*\n${roleLabel}` },
-          { type: 'mrkdwn', text: `*Time:*\n${time}` },
-          { type: 'mrkdwn', text: `*Code Used:*\n\`${session.code}\`` },
-          { type: 'mrkdwn', text: `*Device:*\n${/Mobile|Android|iPhone/i.test(session.userAgent) ? '📱 Mobile' : '💻 Desktop'}` },
-          { type: 'mrkdwn', text: `*Screen:*\n${session.screenSize}` },
+  const payload = isGuest
+    ? {
+        text: `Hey Jamil ${guestName} just logged into the intelligent engine`,
+      }
+    : {
+        text: `${emoji} *Novalyte Dashboard Login*`,
+        blocks: [
+          {
+            type: 'header',
+            text: { type: 'plain_text', text: `${emoji} Admin Login`, emoji: true },
+          },
+          {
+            type: 'section',
+            fields: [
+              { type: 'mrkdwn', text: `*Who:*\n${session.name || 'Jamil (Admin)'}` },
+              { type: 'mrkdwn', text: `*Role:*\n${roleLabel}` },
+              { type: 'mrkdwn', text: `*Time:*\n${time}` },
+              { type: 'mrkdwn', text: `*Code Used:*\n\`${session.code}\`` },
+              { type: 'mrkdwn', text: `*Device:*\n${/Mobile|Android|iPhone/i.test(session.userAgent) ? '📱 Mobile' : '💻 Desktop'}` },
+              { type: 'mrkdwn', text: `*Screen:*\n${session.screenSize}` },
+            ],
+          },
+          {
+            type: 'context',
+            elements: [
+              { type: 'mrkdwn', text: `Session ID: \`${session.sessionId}\` · <https://intel.novalyte.io|Open Dashboard>` },
+            ],
+          },
         ],
-      },
-      {
-        type: 'context',
-        elements: [
-          { type: 'mrkdwn', text: `Session ID: \`${session.sessionId}\` · <https://intel.novalyte.io|Open Dashboard>` },
-        ],
-      },
-    ],
-  };
+      };
 
   try {
-    await fetch(SLACK_WEBHOOK, {
+    const response = await fetch(SLACK_WEBHOOK, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
+    if (!response.ok) {
+      const body = await response.text();
+      console.warn(`Slack alert failed: ${response.status} ${response.statusText} ${body}`);
+    }
   } catch (err) {
     console.warn('Slack alert failed:', err);
   }
