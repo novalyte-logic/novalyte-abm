@@ -1,6 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type AnyReq = any;
 type AnyRes = any;
+const SUPPRESSED_ACTIVITY_EVENT_TYPES = new Set(['blocked_backend_request']);
+const LOW_SIGNAL_ACTIVITY_EVENT_TYPES = new Set(['ui_click', 'page_view']);
+const LOW_SIGNAL_ACTIVITY_MIN_INTERVAL_MS = 120_000;
+const lowSignalSessionMap = new Map<string, number>();
 
 async function parseBody(req: AnyReq): Promise<any> {
   if (req.body && typeof req.body === 'object') return req.body;
@@ -118,7 +122,22 @@ function guestLogoutFeedbackPayload(userName: string, feedback: string, submitte
   };
 }
 
-async function sendFeedbackEmail(userName: string, feedback: string, submittedAt?: string) {
+function activityPayload(userName: string, eventType: string, detail: string, view?: string, timestamp?: string) {
+  return {
+    text: `🛰️ **2104 Activity: ${eventType}**`,
+    blocks: [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*User:* ${userName}\n*View:* ${view || 'unknown'}\n*Event:* ${eventType}\n*Time:* ${nowLabel(timestamp)}\n*Detail:*\n${detail || 'n/a'}`,
+        },
+      },
+    ],
+  };
+}
+
+async function sendEmail(subject: string, text: string) {
   const resendKey = process.env.RESEND_API_KEY || process.env.VITE_RESEND_API_KEY;
   if (!resendKey) return { ok: false, error: 'Missing RESEND_API_KEY' };
 
@@ -130,9 +149,9 @@ async function sendFeedbackEmail(userName: string, feedback: string, submittedAt
     },
     body: JSON.stringify({
       from: 'Novalyte Watchtower <onboarding@resend.dev>',
-      to: ['kaizen@novalyte.io'],
-      subject: `Guest Logout Feedback: ${userName}`,
-      text: `User: ${userName}\nTime: ${nowLabel(submittedAt)}\n\nFeedback:\n${feedback}`,
+      to: [process.env.WATCHTOWER_EMAIL || process.env.VITE_WATCHTOWER_EMAIL || 'admin@novalyte.io'],
+      subject,
+      text,
     }),
   });
 
@@ -156,10 +175,37 @@ export default async function handler(req: AnyReq, res: AnyRes) {
     const body = await parseBody(req);
     const kind = String(body?.kind || '');
     const userName = String(body?.userName || 'Unknown User');
+    const eventType = String(body?.eventType || '').toLowerCase();
+    const sessionId = String(body?.sessionId || 'unknown');
+
+    if (kind === 'activity' && SUPPRESSED_ACTIVITY_EVENT_TYPES.has(eventType)) {
+      return res.status(202).json({ ok: true, skipped: true, reason: 'suppressed_event_type' });
+    }
+
+    if (kind === 'activity' && LOW_SIGNAL_ACTIVITY_EVENT_TYPES.has(eventType)) {
+      const key = sessionId;
+      const now = Date.now();
+      const lastAt = lowSignalSessionMap.get(key) || 0;
+      if (now - lastAt < LOW_SIGNAL_ACTIVITY_MIN_INTERVAL_MS) {
+        return res.status(202).json({ ok: true, skipped: true, reason: 'low_signal_rate_limited' });
+      }
+      lowSignalSessionMap.set(key, now);
+      for (const [mapKey, ts] of lowSignalSessionMap.entries()) {
+        if (now - ts > LOW_SIGNAL_ACTIVITY_MIN_INTERVAL_MS * 8) lowSignalSessionMap.delete(mapKey);
+      }
+    }
 
     let payload: Record<string, unknown>;
     if (kind === 'entry') {
       payload = entryPayload(userName, body?.loginTime);
+    } else if (kind === 'activity') {
+      payload = activityPayload(
+        userName,
+        String(body?.eventType || 'activity'),
+        String(body?.detail || 'n/a'),
+        body?.view,
+        body?.timestamp
+      );
     } else if (kind === 'debrief') {
       payload = debriefPayload(userName, String(body?.duration || '0m 0s'), Array.isArray(body?.actions) ? body.actions : []);
     } else if (kind === 'force_logout') {
@@ -169,11 +215,6 @@ export default async function handler(req: AnyReq, res: AnyRes) {
     } else if (kind === 'guest_logout_feedback') {
       const feedback = String(body?.feedback || '').slice(0, 1000);
       payload = guestLogoutFeedbackPayload(userName, feedback, body?.submittedAt);
-      try {
-        await sendFeedbackEmail(userName, feedback, body?.submittedAt);
-      } catch {
-        // keep Slack delivery as primary path even if email provider fails
-      }
     } else {
       return res.status(400).json({ ok: false, error: 'Unknown alert kind' });
     }
@@ -187,6 +228,15 @@ export default async function handler(req: AnyReq, res: AnyRes) {
     if (!slackRes.ok) {
       const detail = await slackRes.text();
       return res.status(502).json({ ok: false, error: `Slack webhook failed: ${detail}` });
+    }
+
+    try {
+      await sendEmail(
+        `[2104] ${String(kind)} - ${userName}`,
+        JSON.stringify(body, null, 2)
+      );
+    } catch {
+      // Slack is primary; keep request successful even if email provider fails
     }
 
     return res.status(200).json({ ok: true });

@@ -220,6 +220,80 @@ function App() {
     }
   }, [currentView, authenticated, sessionInfo]);
 
+  // For 2104 guest sessions, capture detailed UI interactions for watchtower alerts.
+  useEffect(() => {
+    if (!authenticated || !isGuest2104) return;
+    const CLICK_DEDUPE_MS = 12_000;
+    let lastClickSignature = '';
+    let lastClickAt = 0;
+
+    const describeNode = (el: HTMLElement): string => {
+      const role = (el.getAttribute('role') || el.tagName || '').toLowerCase();
+      const label = [
+        el.getAttribute('aria-label') || '',
+        el.getAttribute('title') || '',
+        (el as HTMLInputElement).name || '',
+        (el as HTMLInputElement).placeholder || '',
+        (el.textContent || '').trim(),
+      ]
+        .map((x) => x.trim())
+        .find(Boolean);
+
+      const safeLabel = label ? label.replace(/\s+/g, ' ').slice(0, 120) : 'unlabeled control';
+      return `${role} :: ${safeLabel}`;
+    };
+
+    const isNoisyElement = (el: HTMLElement): boolean => {
+      const cls = String(el.className || '').toLowerCase();
+      const tag = el.tagName.toLowerCase();
+      if (cls.includes('mapbox') || cls.includes('leaflet') || cls.includes('recharts') || cls.includes('chart')) return true;
+      if (tag === 'svg' || tag === 'path' || tag === 'canvas') return true;
+      return false;
+    };
+
+    const onClick = (event: MouseEvent) => {
+      const raw = event.target as HTMLElement | null;
+      if (!raw) return;
+      if (isNoisyElement(raw)) return;
+
+      const node = raw.closest('button,a,[role=\"button\"],input,select,textarea,label') as HTMLElement | null;
+      if (!node) return;
+      if (isNoisyElement(node)) return;
+
+      const tag = node.tagName.toLowerCase();
+      if (tag === 'input') {
+        const type = ((node as HTMLInputElement).type || '').toLowerCase();
+        if (!['button', 'submit', 'checkbox', 'radio'].includes(type)) return;
+      }
+
+      const description = describeNode(node);
+      if (description.includes('unlabeled control')) return;
+
+      const signature = `${currentView}::${description}`;
+      const now = Date.now();
+      if (signature === lastClickSignature && now - lastClickAt < CLICK_DEDUPE_MS) return;
+      lastClickSignature = signature;
+      lastClickAt = now;
+
+      trackAction('ui_click', `${currentView} :: ${description}`);
+    };
+
+    const onSubmit = (event: Event) => {
+      const form = event.target as HTMLFormElement | null;
+      if (!form) return;
+      const formName = form.getAttribute('name') || form.getAttribute('id') || 'unnamed-form';
+      trackAction('ui_submit', `${currentView} :: form :: ${formName}`);
+    };
+
+    document.addEventListener('click', onClick, true);
+    document.addEventListener('submit', onSubmit, true);
+
+    return () => {
+      document.removeEventListener('click', onClick, true);
+      document.removeEventListener('submit', onSubmit, true);
+    };
+  }, [authenticated, isGuest2104, currentView]);
+
   if (!authenticated) {
     return <LoginScreen onAuth={(session) => {
       setAuthenticated(true);

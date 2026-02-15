@@ -17,6 +17,18 @@ functions.http('bigqueryTrainHandler', async (req, res) => {
 
   try {
     console.log('Training clinic propensity model...');
+
+    await bq.query(`
+      ALTER TABLE \`${GCP_PROJECT}.${DATASET}.clinic_scores\`
+      ADD COLUMN IF NOT EXISTS dm_name STRING,
+      ADD COLUMN IF NOT EXISTS dm_title STRING,
+      ADD COLUMN IF NOT EXISTS dm_email STRING,
+      ADD COLUMN IF NOT EXISTS dm_source STRING,
+      ADD COLUMN IF NOT EXISTS email_verified BOOL,
+      ADD COLUMN IF NOT EXISTS email_verification_status STRING,
+      ADD COLUMN IF NOT EXISTS dm_confidence FLOAT64,
+      ADD COLUMN IF NOT EXISTS enrichment_status STRING
+    `);
     
     // Check if we have enough training data
     const [countResult] = await bq.query(`
@@ -31,6 +43,8 @@ functions.http('bigqueryTrainHandler', async (req, res) => {
       CREATE TABLE IF NOT EXISTS \`${GCP_PROJECT}.${DATASET}.clinic_scores\` (
         clinic_id STRING NOT NULL, name STRING, city STRING, state STRING,
         phone STRING, email STRING, affluence_score FLOAT64, services ARRAY<STRING>,
+        dm_name STRING, dm_title STRING, dm_email STRING, dm_source STRING,
+        email_verified BOOL, email_verification_status STRING, dm_confidence FLOAT64, enrichment_status STRING,
         propensity_score FLOAT64, propensity_tier STRING,
         scored_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
       )
@@ -45,15 +59,16 @@ functions.http('bigqueryTrainHandler', async (req, res) => {
       // Write heuristic scores to clinic_scores table (avoids streaming buffer issue)
       const heuristicQuery = `
         INSERT INTO \`${GCP_PROJECT}.${DATASET}.clinic_scores\`
-          (clinic_id, name, city, state, phone, email, affluence_score, services, propensity_score, propensity_tier, scored_at)
+          (clinic_id, name, city, state, phone, email, affluence_score, services, dm_name, dm_title, dm_email, dm_source, email_verified, email_verification_status, dm_confidence, enrichment_status, propensity_score, propensity_tier, scored_at)
         SELECT
           c.clinic_id, c.name, c.city, c.state, c.phone, c.email, c.affluence_score, c.services,
+          c.dm_name, c.dm_title, c.dm_email, c.dm_source, c.email_verified, c.email_verification_status, c.dm_confidence, c.enrichment_status,
           GREATEST(0, LEAST(1,
             (COALESCE(c.affluence_score, 5) / 10) * 0.35 +
             (COALESCE(c.rating, 3.5) / 5) * 0.25 +
             (LEAST(COALESCE(c.review_count, 0), 200) / 200) * 0.20 +
             (CASE WHEN ARRAY_LENGTH(c.services) > 3 THEN 0.15 WHEN ARRAY_LENGTH(c.services) > 1 THEN 0.10 ELSE 0.05 END) +
-            (CASE WHEN c.email IS NOT NULL THEN 0.05 ELSE 0 END)
+            (CASE WHEN c.email_verified = TRUE THEN 0.05 ELSE 0 END)
           )) as propensity_score,
           CASE
             WHEN GREATEST(0, LEAST(1,
@@ -61,20 +76,22 @@ functions.http('bigqueryTrainHandler', async (req, res) => {
               (COALESCE(c.rating, 3.5) / 5) * 0.25 +
               (LEAST(COALESCE(c.review_count, 0), 200) / 200) * 0.20 +
               (CASE WHEN ARRAY_LENGTH(c.services) > 3 THEN 0.15 WHEN ARRAY_LENGTH(c.services) > 1 THEN 0.10 ELSE 0.05 END) +
-              (CASE WHEN c.email IS NOT NULL THEN 0.05 ELSE 0 END)
+              (CASE WHEN c.email_verified = TRUE THEN 0.05 ELSE 0 END)
             )) >= 0.7 THEN 'hot'
             WHEN GREATEST(0, LEAST(1,
               (COALESCE(c.affluence_score, 5) / 10) * 0.35 +
               (COALESCE(c.rating, 3.5) / 5) * 0.25 +
               (LEAST(COALESCE(c.review_count, 0), 200) / 200) * 0.20 +
               (CASE WHEN ARRAY_LENGTH(c.services) > 3 THEN 0.15 WHEN ARRAY_LENGTH(c.services) > 1 THEN 0.10 ELSE 0.05 END) +
-              (CASE WHEN c.email IS NOT NULL THEN 0.05 ELSE 0 END)
+              (CASE WHEN c.email_verified = TRUE THEN 0.05 ELSE 0 END)
             )) >= 0.4 THEN 'warm'
             ELSE 'cold'
           END as propensity_tier,
           CURRENT_TIMESTAMP() as scored_at
         FROM \`${GCP_PROJECT}.${DATASET}.clinics\` c
-        WHERE NOT c.converted;
+        WHERE NOT c.converted
+          AND c.dm_email IS NOT NULL
+          AND c.email_verified = TRUE;
       `;
       
       await bq.query(heuristicQuery);
@@ -93,6 +110,15 @@ functions.http('bigqueryTrainHandler', async (req, res) => {
         FROM \`${GCP_PROJECT}.${DATASET}.clinic_scores\`
       `);
       const stats = statsResult[0] || {};
+      const [verificationStats] = await bq.query(`
+        SELECT
+          COUNT(*) AS total,
+          COUNTIF(email_verified = TRUE) AS verified,
+          COUNTIF(email_verification_status = 'risky') AS risky,
+          COUNTIF(email_verification_status = 'invalid') AS invalid
+        FROM \`${GCP_PROJECT}.${DATASET}.clinics\`
+      `);
+      const v = verificationStats[0] || {};
       const total = Number(stats.total || 0);
       const stddev = Number(stats.stddev_score || 0);
       const completeness = Number(stats.data_completeness || 0.5);
@@ -115,6 +141,12 @@ functions.http('bigqueryTrainHandler', async (req, res) => {
         rocAuc: Math.round((roundedAccuracy + 0.03) * 1000) / 1000,
         scoredClinics: total,
         distribution: { hot: Number(stats.hot_count || 0), warm: Number(stats.warm_count || 0), cold: Number(stats.cold_count || 0) },
+        verification: {
+          totalClinics: Number(v.total || 0),
+          verifiedEmails: Number(v.verified || 0),
+          riskyEmails: Number(v.risky || 0),
+          invalidEmails: Number(v.invalid || 0),
+        },
         note: 'Heuristic scoring (affluence + rating + reviews + services). ML model activates after 10+ contacted clinics.',
       });
       return;

@@ -9,10 +9,8 @@ import {
 import { cn } from '../utils/cn';
 import { useAppStore } from '../stores/appStore';
 import toast from 'react-hot-toast';
-import VerificationControlPanel from './VerificationControlPanel';
-import { verificationQueueService } from '../services/verificationQueueService';
 
-type PipelineStep = 'idle' | 'syncing' | 'enriching' | 'training' | 'scoring' | 'complete' | 'error';
+type PipelineStep = 'idle' | 'syncing' | 'enriching' | 'verifying' | 'training' | 'scoring' | 'complete' | 'error';
 
 interface PipelineStatus {
   step: PipelineStep;
@@ -34,12 +32,77 @@ interface PipelineConfig {
   daysSinceContact: number;
 }
 
+interface LiveNumbers {
+  clinics: number;
+  leads: number;
+  accuracy: number;
+  hot: number;
+  warm: number;
+  cold: number;
+  enriched: number;
+  verifiedDmEmails: number;
+  riskyDmEmails: number;
+  invalidDmEmails: number;
+  missingDmEmails: number;
+}
+
+type ProspectViewMode = 'table' | 'cards' | 'priority';
+
+interface AdSignals {
+  google: boolean;
+  meta: boolean;
+  linkedin: boolean;
+  reddit: boolean;
+}
+
+const EMPTY_AD_SIGNALS: AdSignals = {
+  google: false,
+  meta: false,
+  linkedin: false,
+  reddit: false,
+};
+
+const EMPTY_LIVE_NUMBERS: LiveNumbers = {
+  clinics: 0,
+  leads: 0,
+  accuracy: 0,
+  hot: 0,
+  warm: 0,
+  cold: 0,
+  enriched: 0,
+  verifiedDmEmails: 0,
+  riskyDmEmails: 0,
+  invalidDmEmails: 0,
+  missingDmEmails: 0,
+};
+
+function getAdSignalCount(signals?: Partial<AdSignals>): number {
+  if (!signals) return 0;
+  return Number(Boolean(signals.google)) + Number(Boolean(signals.meta)) + Number(Boolean(signals.linkedin)) + Number(Boolean(signals.reddit));
+}
+
+function computeIntentScore(prospect: any): number {
+  const propensity = Math.round((Number(prospect?.propensity_score || 0)) * 100);
+  const adSignalCount = getAdSignalCount(prospect?.ad_signals);
+  const verifiedBoost = prospect?.email_verification_status === 'valid' || prospect?.email_verified ? 10 : 0;
+  const dmBoost = prospect?.dm_email ? 6 : 0;
+  const adBoost = adSignalCount * 12;
+  return Math.min(100, Math.max(0, propensity + adBoost + verifiedBoost + dmBoost));
+}
+
+function getRecommendedAction(prospect: any): 'call_immediately' | 'email_sequence' | 'research_first' {
+  const intent = Number(prospect?.intent_score ?? computeIntentScore(prospect));
+  if (intent >= 80 || (prospect?.propensity_tier === 'hot' && getAdSignalCount(prospect?.ad_signals) > 0)) return 'call_immediately';
+  if (intent >= 55) return 'email_sequence';
+  return 'research_first';
+}
+
 // ─── Saved state key ───
 const STORAGE_KEY = 'novalyte_ai_engine_state';
 
 interface SavedState {
   topProspects: any[];
-  liveNumbers: { clinics: number; leads: number; accuracy: number; hot: number; warm: number; cold: number; enriched: number };
+  liveNumbers: LiveNumbers;
   pipelineHistory: any[];
   lastRun: string | null;
   expandedNodes: Record<string, boolean>;
@@ -54,6 +117,13 @@ function loadState(): SavedState | null {
 
 function saveState(state: SavedState) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch {}
+}
+
+function normalizeLiveNumbers(raw: any): LiveNumbers {
+  return {
+    ...EMPTY_LIVE_NUMBERS,
+    ...(raw || {}),
+  };
 }
 
 // ─── Gas Pump Analog Rolling Digit ───
@@ -146,19 +216,23 @@ function DataParticle({ active, delay, color }: { active: boolean; delay: number
 
 // ─── Flow Connector ───
 function FlowConnector({ active, step, targetStep }: { active: boolean; step: PipelineStep; targetStep: PipelineStep }) {
-  const stepOrder: PipelineStep[] = ['syncing', 'enriching', 'training', 'scoring', 'complete'];
+  const stepOrder: PipelineStep[] = ['syncing', 'enriching', 'verifying', 'training', 'scoring', 'complete'];
   const stepIdx = stepOrder.indexOf(step);
   const targetIdx = stepOrder.indexOf(targetStep);
   const isActive = active && stepIdx >= targetIdx;
   const isDone = stepIdx > targetIdx + 1 || (stepIdx === targetIdx + 1 && step !== 'error');
 
   return (
-    <div className="relative flex items-center justify-center w-12 md:w-20">
-      <div className={cn('h-0.5 w-full transition-all duration-700',
-        isDone ? 'bg-[#06B6D4]' : isActive ? 'bg-[#06B6D4]/50' : 'bg-white/10')} />
-      {isActive && !isDone && (
-        <div className="absolute inset-0 overflow-hidden">
-          {[0, 300, 600].map(d => <DataParticle key={d} active delay={d} color="#06B6D4" />)}
+    <div className="relative hidden md:flex items-center justify-center w-8 lg:w-10 shrink-0 py-4">
+      <div className={cn(
+        'h-[2px] w-full rounded-full transition-all duration-700',
+        isDone ? 'bg-[#06B6D4]/90 shadow-[0_0_14px_rgba(6,182,212,0.6)]' :
+        isActive ? 'bg-[#06B6D4]/55' : 'bg-white/10'
+      )} />
+      {isActive && (
+        <div className="absolute inset-0 overflow-hidden pointer-events-none">
+          <div className="absolute inset-0 bg-[linear-gradient(90deg,transparent,rgba(34,211,238,0.35),transparent)] animate-electric-stream" />
+          {[0, 240, 480, 720].map(d => <DataParticle key={d} active delay={d} color="#22D3EE" />)}
         </div>
       )}
     </div>
@@ -193,46 +267,60 @@ function waitUntil(startTime: number, targetMs: number): Promise<void> {
 
 // ─── Expandable Pipeline Node ───
 function PipelineNode({
-  icon: Icon, label, sublabel, active, done, expanded, onToggle, stats, children
+  icon: Icon, label, sublabel, active, done, expanded, onToggle, stats, children, stepNo,
 }: {
   icon: any; label: string; sublabel: string; active: boolean; done: boolean;
   expanded?: boolean; onToggle?: () => void;
   stats?: { label: string; value: string }[];
   children?: React.ReactNode;
+  stepNo?: number;
 }) {
   return (
     <div className={cn(
-      'relative flex-1 min-w-[150px] rounded-2xl border-2 transition-all duration-700 cursor-pointer',
-      active ? 'border-[#06B6D4] bg-[#06B6D4]/5 shadow-[0_0_30px_rgba(6,182,212,0.15)]' :
-      done ? 'border-[#06B6D4]/40 bg-[#06B6D4]/5' : 'border-white/10 bg-white/[0.02]'
+      'relative flex-1 min-w-[220px] md:min-w-0 md:basis-0 rounded-2xl border transition-all duration-500 cursor-pointer overflow-hidden',
+      active ? 'border-[#22D3EE]/60 bg-gradient-to-b from-[#062533] to-[#04121a] shadow-[0_0_30px_rgba(34,211,238,0.2)]' :
+      done ? 'border-[#06B6D4]/35 bg-[#06131b]/95' : 'border-white/10 bg-[#060b11]/95'
     )} onClick={onToggle}>
-      {active && <div className="absolute inset-0 rounded-2xl bg-[#06B6D4]/5 animate-pulse" />}
+      {active && (
+        <>
+          <div className="absolute inset-0 rounded-2xl bg-[#06B6D4]/8 animate-pulse" />
+          <div className="absolute inset-0 rounded-2xl border border-[#22D3EE]/35 animate-electric-outline pointer-events-none" />
+        </>
+      )}
       <div className="relative p-4">
-        <div className="flex items-center gap-2 mb-2">
-          <div className={cn('w-8 h-8 rounded-lg flex items-center justify-center transition-all',
-            active ? 'bg-[#06B6D4] shadow-lg shadow-[#06B6D4]/40' : done ? 'bg-[#06B6D4]/20' : 'bg-white/5')}>
-            {active ? <Loader2 className="w-4 h-4 text-black animate-spin" /> :
+        <div className="flex items-center gap-2.5 mb-3 min-w-0">
+          <div className={cn('w-8 h-8 rounded-lg flex items-center justify-center transition-all border',
+            active ? 'bg-[#06B6D4]/20 border-[#22D3EE]/50 shadow-[0_0_14px_rgba(34,211,238,0.45)]' :
+            done ? 'bg-[#06B6D4]/15 border-[#06B6D4]/30' : 'bg-white/5 border-white/10')}>
+            {active ? <Loader2 className="w-4 h-4 text-[#22D3EE] animate-spin" /> :
              done ? <CheckCircle className="w-4 h-4 text-[#06B6D4]" /> : <Icon className="w-4 h-4 text-slate-500" />}
           </div>
           <div className="flex-1 min-w-0">
-            <h4 className={cn('text-xs font-semibold truncate', active || done ? 'text-white' : 'text-slate-400')}>{label}</h4>
-            <p className="text-[9px] text-slate-500 truncate">{sublabel}</p>
+            <div className="flex items-center gap-2">
+              {typeof stepNo === 'number' && (
+                <span className="inline-flex items-center justify-center h-4 min-w-4 rounded-full px-1 text-[10px] font-semibold bg-white/5 border border-white/10 text-slate-400">
+                  {stepNo}
+                </span>
+              )}
+              <h4 className={cn('text-xs font-semibold truncate', active || done ? 'text-white' : 'text-slate-300')}>{label}</h4>
+            </div>
+            <p className="text-[10px] text-slate-500 truncate mt-0.5">{sublabel}</p>
           </div>
           {onToggle && (expanded ? <ChevronDown className="w-3.5 h-3.5 text-slate-500" /> : <ChevronRight className="w-3.5 h-3.5 text-slate-500" />)}
         </div>
         {stats && stats.length > 0 && (
-          <div className="space-y-1 pt-2 border-t border-white/[0.06]">
+          <div className="space-y-1.5 pt-2 border-t border-white/[0.08]">
             {stats.map((s, i) => (
-              <div key={i} className="flex justify-between text-[10px]">
-                <span className="text-slate-500">{s.label}</span>
-                <span className="text-[#06B6D4] font-semibold tabular-nums">{s.value}</span>
+              <div key={i} className="flex justify-between text-[11px] gap-2">
+                <span className="text-slate-500 truncate">{s.label}</span>
+                <span className="text-[#22D3EE] font-semibold tabular-nums">{s.value}</span>
               </div>
             ))}
           </div>
         )}
       </div>
       {expanded && children && (
-        <div className="px-4 pb-4 pt-0 border-t border-white/[0.06] text-xs text-slate-400 space-y-2 animate-fade-in" onClick={e => e.stopPropagation()}>
+        <div className="px-4 pb-4 pt-0 border-t border-white/[0.08] text-xs text-slate-400 space-y-2 animate-fade-in bg-black/20" onClick={e => e.stopPropagation()}>
           {children}
         </div>
       )}
@@ -354,6 +442,7 @@ function MetricDrillDown({
 
 export default function AIEngine() {
   const saved = useRef(loadState());
+  const runTokenRef = useRef(0);
   const [status, setStatus] = useState<PipelineStatus>({ step: 'idle', message: 'Ready to run intelligence pipeline', progress: 0 });
   const [lastRun, setLastRun] = useState<Date | null>(saved.current?.lastRun ? new Date(saved.current.lastRun) : null);
   const [topProspects, setTopProspects] = useState<any[]>(saved.current?.topProspects || []);
@@ -364,7 +453,7 @@ export default function AIEngine() {
   });
   const [pipelineHistory, setPipelineHistory] = useState<any[]>(saved.current?.pipelineHistory || []);
   const [selectedProspect, setSelectedProspect] = useState<any>(null);
-  const [liveNumbers, setLiveNumbers] = useState(saved.current?.liveNumbers || { clinics: 0, leads: 0, accuracy: 0, hot: 0, warm: 0, cold: 0, enriched: 0 });
+  const [liveNumbers, setLiveNumbers] = useState<LiveNumbers>(normalizeLiveNumbers(saved.current?.liveNumbers));
   const [pumpRolling, setPumpRolling] = useState(false);
   const [pumpScore, setPumpScore] = useState<number>(0);
   const [addingToSequence] = useState(false);
@@ -373,21 +462,20 @@ export default function AIEngine() {
   const [selectedClinics, setSelectedClinics] = useState<Set<string>>(new Set());
   const [filterTier, setFilterTier] = useState<'all' | 'hot' | 'warm' | 'cold'>('all');
   const [filterEmail, setFilterEmail] = useState<'all' | 'with_email' | 'no_email'>('all');
+  const [prospectView, setProspectView] = useState<ProspectViewMode>('priority');
   const [searchQuery, setSearchQuery] = useState('');
   const [pushingToCRM, setPushingToCRM] = useState(false);
   const [metricDrill, setMetricDrill] = useState<{ title: string; subtitle: string; data: any[]; columns: any[] } | null>(null);
+  const [clearArmed, setClearArmed] = useState(false);
+  const [holdStartProgress, setHoldStartProgress] = useState(0);
+  const [isHoldingStart, setIsHoldingStart] = useState(false);
+  const holdStartTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const holdStartAtRef = useRef<number | null>(null);
+  const callFirstAlertedRef = useRef<Set<string>>(new Set());
   const [dripSequences, setDripSequences] = useState<any[]>(() => {
     try { return JSON.parse(localStorage.getItem('novalyte_drip_sequences') || '[]'); } catch { return []; }
   });
-  const [verificationStatusMap, setVerificationStatusMap] = useState<Record<string, string>>({});
-
-  useEffect(() => {
-    if (!verificationQueueService.isConfigured || topProspects.length === 0) return;
-    const clinicIds = topProspects.slice(0, 400).map(p => p.clinic_id).filter(Boolean);
-    verificationQueueService.fetchClinicStatuses(clinicIds)
-      .then(setVerificationStatusMap)
-      .catch(() => {});
-  }, [topProspects]);
+  const getProspectEmail = (p: any) => p.email || p.dm_email || '';
 
   // ─── Import clinics from Clinic Discovery ───
   const importFromDiscovery = () => {
@@ -487,7 +575,7 @@ export default function AIEngine() {
   // ─── Clear all results ───
   const clearAllResults = () => {
     setTopProspects([]);
-    setLiveNumbers({ clinics: 0, leads: 0, accuracy: 0, hot: 0, warm: 0, cold: 0, enriched: 0 });
+    setLiveNumbers(EMPTY_LIVE_NUMBERS);
     setSelectedClinics(new Set());
     setStatus({ step: 'idle', message: 'Ready to run intelligence pipeline', progress: 0 });
     setPumpScore(0);
@@ -497,6 +585,15 @@ export default function AIEngine() {
     localStorage.removeItem('novalyte_drip_sequences');
     setDripSequences([]);
     toast.success('All AI Engine data cleared');
+  };
+
+  const stopPipeline = () => {
+    runTokenRef.current += 1;
+    setPumpRolling(false);
+    setIsHoldingStart(false);
+    setHoldStartProgress(0);
+    setStatus({ step: 'idle', message: 'Engine stopped. Click Clear again to clear data.', progress: 0 });
+    toast('Engine stopped', { icon: '■' });
   };
 
   const discoveryClinicCount = (() => {
@@ -516,19 +613,109 @@ export default function AIEngine() {
 
   useEffect(() => { persistState(); }, [persistState]);
 
+  useEffect(() => {
+    if (!clearArmed) return;
+    const reset = window.setTimeout(() => setClearArmed(false), 7000);
+    return () => window.clearTimeout(reset);
+  }, [clearArmed]);
+
   const toggleNode = (key: string) => setExpandedNodes(prev => ({ ...prev, [key]: !prev[key] }));
 
   // ─── Filtered prospects ───
   const filteredProspects = topProspects.filter(p => {
     if (filterTier !== 'all' && p.propensity_tier !== filterTier) return false;
-    if (filterEmail === 'with_email' && !p.email) return false;
-    if (filterEmail === 'no_email' && p.email) return false;
+    const hasEmail = Boolean(getProspectEmail(p));
+    if (filterEmail === 'with_email' && !hasEmail) return false;
+    if (filterEmail === 'no_email' && hasEmail) return false;
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       return (p.name || '').toLowerCase().includes(q) || (p.city || '').toLowerCase().includes(q) || (p.state || '').toLowerCase().includes(q);
     }
     return true;
+  }).sort((a, b) => {
+    const aIntent = Number(a.intent_score ?? computeIntentScore(a));
+    const bIntent = Number(b.intent_score ?? computeIntentScore(b));
+    if (bIntent !== aIntent) return bIntent - aIntent;
+    const aScore = Number(a.propensity_score || 0);
+    const bScore = Number(b.propensity_score || 0);
+    return bScore - aScore;
   });
+
+  const detectAdSignalsForWebsite = async (prospect: any): Promise<AdSignals> => {
+    const signals: AdSignals = { ...EMPTY_AD_SIGNALS };
+    const website = String(prospect?.website || '').trim();
+    const clinicName = String(prospect?.name || '').trim();
+    const city = String(prospect?.city || '').trim();
+    const state = String(prospect?.state || '').trim();
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 11000);
+    const safeFetchText = async (url: string) => {
+      try {
+        const resp = await fetch(url, { signal: controller.signal });
+        if (!resp.ok) return '';
+        return (await resp.text()).toLowerCase();
+      } catch {
+        return '';
+      }
+    };
+
+    try {
+      if (website) {
+        const cleaned = website.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+        if (cleaned) {
+          const html = await safeFetchText(`https://r.jina.ai/http://${cleaned}`);
+          if (html) {
+            signals.google = /(googletagmanager|gtag\(|googleadservices|doubleclick|adservice\.google)/.test(html);
+            signals.meta = /(facebook\.net\/en_us\/fbevents|fbq\(|meta pixel|connect\.facebook\.net)/.test(html);
+            signals.linkedin = /(snap\.licdn\.com|linkedin insight|lintrk\()/.test(html);
+            signals.reddit = /(pixel\.redditmedia\.com|rdt\('track'|reddit pixel)/.test(html);
+          }
+        }
+      }
+
+      // Fallback: query public ad/library pages via jina proxy for market intent signals.
+      // This is heuristic but useful when site pixels are missing.
+      if (!signals.google && clinicName) {
+        const googleQuery = encodeURIComponent(`"${clinicName}" ${city} ${state} ads`);
+        const googleHtml = await safeFetchText(`https://r.jina.ai/http://www.google.com/search?q=${googleQuery}`);
+        signals.google = /(sponsored|ads|google ads|adwords|ad service)/.test(googleHtml) && googleHtml.includes(clinicName.toLowerCase().slice(0, 8));
+      }
+
+      if (!signals.meta && clinicName) {
+        const metaQuery = encodeURIComponent(`${clinicName} ${city}`);
+        const metaHtml = await safeFetchText(`https://r.jina.ai/http://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=US&q=${metaQuery}`);
+        signals.meta = /(ad library|results|sponsored|meta)/.test(metaHtml) && metaHtml.includes(clinicName.toLowerCase().slice(0, 8));
+      }
+    } finally {
+      window.clearTimeout(timeout);
+    }
+
+    return signals;
+  };
+
+  const openClinicIntel = (prospect: any) => {
+    const intent = Number(prospect.intent_score ?? computeIntentScore(prospect));
+    const action = getRecommendedAction(prospect);
+    setSelectedProspect({ ...prospect, intent_score: intent, recommended_action: action });
+    if (action === 'call_immediately') {
+      const key = String(prospect.clinic_id || prospect.name || '');
+      if (callFirstAlertedRef.current.has(key)) return;
+      callFirstAlertedRef.current.add(key);
+      toast('Call first: this clinic shows high buying intent. Prioritize phone outreach before sequence.', {
+        icon: '!',
+        duration: 4500,
+      });
+    }
+  };
+
+  const rankProspectsByIntent = (prospects: any[]) => {
+    return [...prospects].sort((a, b) => {
+      const aIntent = Number(a.intent_score ?? computeIntentScore(a));
+      const bIntent = Number(b.intent_score ?? computeIntentScore(b));
+      if (bIntent !== aIntent) return bIntent - aIntent;
+      return Number(b.propensity_score || 0) - Number(a.propensity_score || 0);
+    });
+  };
 
   const toggleClinic = (id: string) => {
     setSelectedClinics(prev => {
@@ -542,9 +729,12 @@ export default function AIEngine() {
     if (selectedClinics.size === filteredProspects.length) {
       setSelectedClinics(new Set());
     } else {
-      // Cap at 100 for drip sequence
-      setSelectedClinics(new Set(filteredProspects.slice(0, 100).map(p => p.clinic_id)));
+      setSelectedClinics(new Set(filteredProspects.map(p => p.clinic_id)));
     }
+  };
+
+  const selectFilteredClinics = () => {
+    setSelectedClinics(new Set(filteredProspects.map(p => p.clinic_id)));
   };
 
   // ─── Metric card click handlers ───
@@ -585,8 +775,8 @@ export default function AIEngine() {
         setMetricDrill({ title: `Leads Synced — ${liveNumbers.leads.toLocaleString()}`, subtitle: 'Patient leads synced to BigQuery', data: topProspects, columns: defaultColumns });
         break;
       case 'enriched':
-        setMetricDrill({ title: `DMs Enriched — ${liveNumbers.enriched.toLocaleString()}`, subtitle: 'Decision makers with verified emails via Apollo + Exa + Bedrock',
-          data: topProspects.filter(p => p.email), columns: defaultColumns });
+        setMetricDrill({ title: `DMs Enriched — ${liveNumbers.enriched.toLocaleString()}`, subtitle: 'Decision makers with verified emails via Apollo + Exa + Vertex AI',
+          data: topProspects.filter(p => getProspectEmail(p)), columns: defaultColumns });
         break;
       case 'accuracy':
         setMetricDrill({ title: `Model Accuracy — ${(liveNumbers.accuracy * 100).toFixed(1)}%`, subtitle: 'Dynamic accuracy computed from BigQuery score distribution, data completeness, and dataset size',
@@ -610,10 +800,15 @@ export default function AIEngine() {
     }
   };
 
-  // ═══ 11-SECOND TIMED PIPELINE ═══
+  // ═══ TIMED PIPELINE WITH VERIFICATION GATE ═══
   const runPipeline = async () => {
+    const runToken = runTokenRef.current + 1;
+    runTokenRef.current = runToken;
+    const stillRunning = () => runTokenRef.current === runToken;
+    const MIN_VERIFIED_EMAIL_COVERAGE = 0.1;
     const startTime = Date.now();
-    setLiveNumbers({ clinics: 0, leads: 0, accuracy: 0, hot: 0, warm: 0, cold: 0, enriched: 0 });
+    setClearArmed(false);
+    setLiveNumbers({ ...EMPTY_LIVE_NUMBERS });
     setPumpRolling(true);
     setPumpScore(0);
     setSelectedClinics(new Set());
@@ -622,53 +817,114 @@ export default function AIEngine() {
     try {
       // Step 1: SYNC (0s → 3s)
       const syncRes = await fetch('https://us-central1-warp-486714.cloudfunctions.net/bigquery-sync', { method: 'POST' });
+      if (!stillRunning()) return;
       if (!syncRes.ok) throw new Error('Sync failed: ' + (await syncRes.text()));
       const syncData = await syncRes.json();
+      if (!stillRunning()) return;
       if (!syncData.success) throw new Error(syncData.error || 'Sync failed');
+      const enrichmentData = syncData?.enrichment || {};
+      if (!syncData?.enrichment) {
+        console.warn('Sync API missing enrichment payload; continuing with safe defaults.');
+      }
       await waitUntil(startTime, 3000);
-      setLiveNumbers(prev => ({ ...prev, clinics: syncData.clinicsSynced, leads: syncData.leadsSynced }));
-      setStatus({ step: 'enriching', message: 'Enriching DMs via Apollo + Exa + Bedrock...', progress: 25, clinicsSynced: syncData.clinicsSynced, leadsSynced: syncData.leadsSynced });
+      if (!stillRunning()) return;
+      setLiveNumbers(prev => ({
+        ...prev,
+        clinics: syncData.clinicsSynced,
+        leads: syncData.leadsSynced,
+        enriched: Number(enrichmentData.clinicsWithDM || 0),
+      }));
+      setStatus({ step: 'enriching', message: 'Enriching DMs via Apollo + Exa + Vertex AI...', progress: 22, clinicsSynced: syncData.clinicsSynced, leadsSynced: syncData.leadsSynced });
 
       // Step 2: ENRICHMENT (3s → 5s)
-      const enrichedCount = Math.min(syncData.clinicsSynced, Math.floor(syncData.clinicsSynced * 0.35));
+      const enrichedCount = Number(enrichmentData.clinicsWithDM || 0);
       for (let i = 1; i <= 8; i++) {
         await waitUntil(startTime, 3000 + (2000 / 8) * i);
+        if (!stillRunning()) return;
         setLiveNumbers(prev => ({ ...prev, enriched: Math.round(enrichedCount * (i / 8)) }));
-        setStatus(prev => ({ ...prev, progress: 25 + Math.round(15 * (i / 8)) }));
+        setStatus(prev => ({ ...prev, progress: 22 + Math.round(12 * (i / 8)) }));
       }
       await waitUntil(startTime, 5000);
-      setStatus({ step: 'training', message: 'Training model with BigQuery ML...', progress: 42, clinicsSynced: syncData.clinicsSynced, leadsSynced: syncData.leadsSynced });
+      if (!stillRunning()) return;
+      setStatus({ step: 'verifying', message: 'Verifying DM emails + enrichment confidence...', progress: 36, clinicsSynced: syncData.clinicsSynced, leadsSynced: syncData.leadsSynced });
 
-      // Step 3: TRAIN (5s → 8s)
+      // Step 3: VERIFY (5s → 7s)
+      const verification = enrichmentData;
+      const verifiedCount = Number(verification.clinicsWithVerifiedDMEmail || 0);
+      const riskyCount = Number(verification.clinicsWithRiskyDMEmail || 0);
+      const invalidCount = Number(verification.clinicsWithInvalidDMEmail || 0);
+      const missingCount = Number(verification.clinicsMissingDM || Math.max(0, syncData.clinicsSynced - Number(verification.clinicsWithDM || 0)));
+      for (let i = 1; i <= 6; i++) {
+        await waitUntil(startTime, 5000 + (2000 / 6) * i);
+        if (!stillRunning()) return;
+        setLiveNumbers(prev => ({
+          ...prev,
+          verifiedDmEmails: Math.round(verifiedCount * (i / 6)),
+          riskyDmEmails: Math.round(riskyCount * (i / 6)),
+          invalidDmEmails: Math.round(invalidCount * (i / 6)),
+          missingDmEmails: Math.round(missingCount * (i / 6)),
+        }));
+        setStatus(prev => ({ ...prev, progress: 36 + Math.round(16 * (i / 6)) }));
+      }
+
+      const verifiedCoverage = syncData.clinicsSynced > 0 ? verifiedCount / syncData.clinicsSynced : 0;
+      if (verifiedCoverage < MIN_VERIFIED_EMAIL_COVERAGE) {
+        throw new Error(`Verification gate blocked scoring: only ${(verifiedCoverage * 100).toFixed(1)}% clinics have verified DM emails`);
+      }
+
+      await waitUntil(startTime, 7000);
+      if (!stillRunning()) return;
+      setStatus({ step: 'training', message: 'Training model with BigQuery ML on verified contacts...', progress: 54, clinicsSynced: syncData.clinicsSynced, leadsSynced: syncData.leadsSynced });
+
+      // Step 4: TRAIN (7s → 10s)
       const trainRes = await fetch('https://us-central1-warp-486714.cloudfunctions.net/bigquery-train', { method: 'POST' });
+      if (!stillRunning()) return;
       if (!trainRes.ok) throw new Error('Training failed: ' + (await trainRes.text()));
       const trainData = await trainRes.json();
+      if (!stillRunning()) return;
       if (!trainData.success) throw new Error(trainData.error || 'Training failed');
       for (let i = 1; i <= 6; i++) {
-        await waitUntil(startTime, 5000 + (3000 / 6) * i);
+        await waitUntil(startTime, 7000 + (3000 / 6) * i);
+        if (!stillRunning()) return;
         setLiveNumbers(prev => ({ ...prev, accuracy: trainData.accuracy * (i / 6) }));
-        setStatus(prev => ({ ...prev, progress: 42 + Math.round(23 * (i / 6)) }));
+        setStatus(prev => ({ ...prev, progress: 54 + Math.round(16 * (i / 6)) }));
       }
-      await waitUntil(startTime, 8000);
-      setStatus({ step: 'scoring', message: 'Calculating lead scores...', progress: 68, clinicsSynced: syncData.clinicsSynced, leadsSynced: syncData.leadsSynced, modelAccuracy: trainData.accuracy });
+      await waitUntil(startTime, 10000);
+      if (!stillRunning()) return;
+      setStatus({ step: 'scoring', message: 'Calculating lead scores (verified DM emails only)...', progress: 72, clinicsSynced: syncData.clinicsSynced, leadsSynced: syncData.leadsSynced, modelAccuracy: trainData.accuracy });
 
-      // Step 4: SCORE (8s → 10.5s)
+      // Step 5: SCORE (10s → 12.5s)
       const scoreRes = await fetch('https://us-central1-warp-486714.cloudfunctions.net/bigquery-score', { method: 'POST' });
+      if (!stillRunning()) return;
       if (!scoreRes.ok) throw new Error('Scoring failed: ' + (await scoreRes.text()));
       const scoreData = await scoreRes.json();
+      if (!stillRunning()) return;
       if (!scoreData.success) throw new Error(scoreData.error || 'Scoring failed');
+      const scoreVerification = scoreData?.verification || {};
       for (let i = 1; i <= 10; i++) {
-        await waitUntil(startTime, 8000 + (2500 / 10) * i);
-        setLiveNumbers(prev => ({ ...prev, hot: Math.round(scoreData.hotProspects * (i / 10)), warm: Math.round(scoreData.warmProspects * (i / 10)), cold: Math.round((scoreData.coldProspects || 0) * (i / 10)) }));
-        setStatus(prev => ({ ...prev, progress: 68 + Math.round(27 * (i / 10)) }));
+        await waitUntil(startTime, 10000 + (2500 / 10) * i);
+        if (!stillRunning()) return;
+        setLiveNumbers(prev => ({
+          ...prev,
+          hot: Math.round(scoreData.hotProspects * (i / 10)),
+          warm: Math.round(scoreData.warmProspects * (i / 10)),
+          cold: Math.round((scoreData.coldProspects || 0) * (i / 10)),
+          verifiedDmEmails: Math.max(prev.verifiedDmEmails, Math.round(Number(scoreVerification.verified || 0) * (i / 10))),
+          riskyDmEmails: Math.max(prev.riskyDmEmails, Math.round(Number(scoreVerification.risky || 0) * (i / 10))),
+          invalidDmEmails: Math.max(prev.invalidDmEmails, Math.round(Number(scoreVerification.invalid || 0) * (i / 10))),
+          missingDmEmails: Math.max(prev.missingDmEmails, Math.round(Number(scoreVerification.missing_dm_email || 0) * (i / 10))),
+        }));
+        setStatus(prev => ({ ...prev, progress: 72 + Math.round(24 * (i / 10)) }));
       }
 
-      // Step 5: REVEAL (10.5s → 11s) — single top score
-      await waitUntil(startTime, 10500);
+      // Step 6: REVEAL (12.5s → 13s) — single top score
+      await waitUntil(startTime, 12500);
+      if (!stillRunning()) return;
       const topScore = (scoreData.topProspects || []).length > 0 ? scoreData.topProspects[0].propensity_score : 0;
       setPumpScore(topScore);
       setPumpRolling(false);
-      await waitUntil(startTime, 11000);
+      await waitUntil(startTime, 13000);
+      if (!stillRunning()) return;
 
       setStatus({ step: 'complete', message: 'Pipeline complete', progress: 100, clinicsSynced: syncData.clinicsSynced, leadsSynced: syncData.leadsSynced, modelAccuracy: trainData.accuracy, hotProspects: scoreData.hotProspects, warmProspects: scoreData.warmProspects, coldProspects: scoreData.coldProspects });
       
@@ -692,13 +948,53 @@ export default function AIEngine() {
           }
         }
       } catch {}
-      
+
+      // Step 7: Ad Intent Detection (during scan) — checks paid media signals on clinic websites
+      setStatus(prev => ({ ...prev, message: 'Detecting ad activity signals (Google / Meta / LinkedIn / Reddit)...', progress: 96 }));
+      const candidatesForAdScan = allProspects.slice(0, 180);
+      const adSignalMap = new Map<string, AdSignals>();
+      let adDone = 0;
+      const workers = Array.from({ length: 6 }, async (_w, workerIndex) => {
+        for (let i = workerIndex; i < candidatesForAdScan.length; i += 6) {
+          if (!stillRunning()) return;
+          const prospect = candidatesForAdScan[i];
+          const signals = await detectAdSignalsForWebsite(prospect);
+          adSignalMap.set(prospect.clinic_id, signals);
+          adDone += 1;
+          if (adDone % 8 === 0 || adDone === candidatesForAdScan.length) {
+            const pct = candidatesForAdScan.length > 0 ? Math.round((adDone / candidatesForAdScan.length) * 100) : 100;
+            setStatus(prev => ({ ...prev, message: `Detecting ad activity signals... ${pct}%`, progress: Math.min(99, 96 + Math.round(pct / 33)) }));
+          }
+        }
+      });
+      await Promise.all(workers);
+      if (!stillRunning()) return;
+
+      allProspects = allProspects.map((p: any) => {
+        const adSignals = adSignalMap.get(p.clinic_id) || { ...EMPTY_AD_SIGNALS };
+        const intentScore = computeIntentScore({ ...p, ad_signals: adSignals });
+        const recommendedAction = getRecommendedAction({ ...p, ad_signals: adSignals, intent_score: intentScore });
+        return {
+          ...p,
+          ad_signals: adSignals,
+          ad_active: getAdSignalCount(adSignals) > 0,
+          intent_score: intentScore,
+          recommended_action: recommendedAction,
+        };
+      });
+
+      allProspects = rankProspectsByIntent(allProspects);
       setTopProspects(allProspects);
       const runTime = new Date();
       setLastRun(runTime);
-      setPipelineHistory(prev => [{ timestamp: runTime.toISOString(), duration: 11, clinics: syncData.clinicsSynced, leads: syncData.leadsSynced, accuracy: trainData.accuracy, hotProspects: scoreData.hotProspects, status: 'success' }, ...prev.slice(0, 9)]);
-      toast.success(`Pipeline complete — ${scoreData.hotProspects} hot leads found`);
+      setPipelineHistory(prev => [{ timestamp: runTime.toISOString(), duration: 13, clinics: syncData.clinicsSynced, leads: syncData.leadsSynced, accuracy: trainData.accuracy, hotProspects: scoreData.hotProspects, status: 'success' }, ...prev.slice(0, 9)]);
+      toast.success(`Pipeline complete — ${scoreData.hotProspects} hot leads found (${Number(scoreVerification.verified || 0)} verified DM emails)`);
+      const topCallFirst = allProspects.filter((p: any) => p.recommended_action === 'call_immediately').length;
+      if (topCallFirst > 0) {
+        toast(`${topCallFirst} clinics show buy intent. Call these first before sequencing.`, { icon: '!', duration: 5000 });
+      }
     } catch (err: any) {
+      if (!stillRunning()) return;
       setPumpRolling(false);
       setStatus({ step: 'error', message: err.message || 'Pipeline failed', progress: 0 });
       toast.error('Pipeline failed: ' + err.message);
@@ -710,9 +1006,9 @@ export default function AIEngine() {
   const addToSequenceWithAI = async () => {
     // Use selected clinics if any, otherwise top prospects with email
     const pool = selectedClinics.size > 0
-      ? topProspects.filter(p => selectedClinics.has(p.clinic_id) && p.email)
-      : topProspects.filter(p => p.email);
-    const targets = pool.slice(0, 100);
+      ? topProspects.filter(p => selectedClinics.has(p.clinic_id) && getProspectEmail(p))
+      : filteredProspects.filter(p => getProspectEmail(p));
+    const targets = pool;
     if (targets.length === 0) { toast.error('No prospects with emails found. Select clinics with emails or run the pipeline.'); return; }
 
     // Split into 5 days (~20 per day)
@@ -728,7 +1024,7 @@ export default function AIEngine() {
       day: dayIdx + 1,
       sendDate: new Date(Date.now() + dayIdx * 86400000).toISOString().slice(0, 10),
       clinics: batch.map(p => ({
-        clinic_id: p.clinic_id, name: p.name, email: p.email,
+        clinic_id: p.clinic_id, name: p.name, email: getProspectEmail(p),
         city: p.city, state: p.state, tier: p.propensity_tier,
         score: p.propensity_score, services: p.services,
       })),
@@ -766,15 +1062,15 @@ export default function AIEngine() {
         clinic: {
           id: p.clinic_id, name: p.name, type: 'mens_health_clinic' as const,
           address: { street: '', city: p.city || '', state: p.state || '', zip: '', country: 'USA' },
-          phone: '', email: p.email || undefined,
-          managerEmail: p.email || undefined,
+          phone: '', email: getProspectEmail(p) || undefined,
+          managerEmail: getProspectEmail(p) || undefined,
           services: p.services || [], marketZone: market,
           discoveredAt: new Date(), lastUpdated: new Date(),
         },
-        decisionMaker: p.email ? {
+        decisionMaker: getProspectEmail(p) ? {
           id: `dm-${p.clinic_id}`, clinicId: p.clinic_id,
           firstName: (p.name || '').split(' ')[0] || 'Team',
-          lastName: '', email: p.email, title: 'Decision Maker',
+          lastName: '', email: getProspectEmail(p), title: 'Decision Maker',
           role: 'clinic_manager' as const, confidence: 60, source: 'ai-engine' as const,
         } : undefined,
         status: 'ready_to_call',
@@ -786,7 +1082,7 @@ export default function AIEngine() {
         activities: [{
           id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           type: 'note',
-          description: `Staged in drip sequence (${p.propensity_tier} tier) — awaiting Bedrock personalization`,
+          description: `Staged in drip sequence (${p.propensity_tier} tier) — awaiting Vertex AI personalization`,
           timestamp: new Date(),
         }],
         createdAt: new Date(),
@@ -796,15 +1092,16 @@ export default function AIEngine() {
 
     if (newContacts.length > 0) addContacts(newContacts);
 
-    toast.success(`${targets.length} clinics staged in Intro Email phase → Go to Email Outreach to personalize with Bedrock & send`);
+    toast.success(`${targets.length} clinics staged in Intro Email phase → Go to Email Outreach to personalize with Vertex AI & send`);
     setSelectedClinics(new Set());
   };
 
   // ═══ PUSH SELECTED TO CRM ═══
-  const pushToCRM = () => {
-    if (selectedClinics.size === 0) { toast.error('Select clinics first'); return; }
+  const pushToCRM = (clinicIds?: Set<string>) => {
+    const idsToPush = clinicIds || selectedClinics;
+    if (idsToPush.size === 0) { toast.error('Select clinics first'); return; }
     setPushingToCRM(true);
-    const selected = topProspects.filter(p => selectedClinics.has(p.clinic_id));
+    const selected = topProspects.filter(p => idsToPush.has(p.clinic_id));
 
     // Build CRM contacts directly and push to Zustand store — instant, no API calls
     const { addContacts, contacts, markets } = useAppStore.getState();
@@ -826,10 +1123,10 @@ export default function AIEngine() {
         type: 'mens_health_clinic' as const,
         address: { street: '', city: p.city || '', state: p.state || '', zip: '', country: 'USA' },
         phone: p.phone || '',
-        email: p.email || undefined,
+        email: getProspectEmail(p) || undefined,
         website: p.website || undefined,
         managerName: p.dm_name || undefined,
-        managerEmail: p.dm_email || p.email || undefined,
+        managerEmail: p.dm_email || getProspectEmail(p) || undefined,
         services: p.services || [],
         marketZone: market,
         rating: p.rating || undefined,
@@ -843,7 +1140,7 @@ export default function AIEngine() {
         clinicId: p.clinic_id,
         firstName: (p.dm_name || '').split(' ')[0] || '',
         lastName: (p.dm_name || '').split(' ').slice(1).join(' ') || '',
-        email: p.dm_email || p.email || '',
+        email: getProspectEmail(p) || '',
         title: 'Decision Maker',
         role: 'clinic_manager' as const,
         confidence: 70,
@@ -854,7 +1151,7 @@ export default function AIEngine() {
         id: `contact-${p.clinic_id}-${Date.now()}`,
         clinic,
         decisionMaker: dm,
-        status: dm?.email ? 'ready_to_call' : 'researching',
+        status: dm?.email || getProspectEmail(p) ? 'ready_to_call' : 'researching',
         priority: p.propensity_tier === 'hot' ? 'high' : p.propensity_tier === 'warm' ? 'medium' : 'low',
         score: Math.round((p.propensity_score || 0) * 100),
         tags: p.services || [],
@@ -889,6 +1186,15 @@ export default function AIEngine() {
     }
     setSelectedClinics(new Set());
     setPushingToCRM(false);
+  };
+
+  const pushFilteredToCRM = () => {
+    const filteredIds = new Set(filteredProspects.map(p => p.clinic_id).filter(Boolean));
+    if (filteredIds.size === 0) {
+      toast.error('No filtered clinics to push');
+      return;
+    }
+    pushToCRM(filteredIds);
   };
 
   // ═══ EXPORT FOR GOOGLE ADS (AI STUDIO) ═══
@@ -959,13 +1265,69 @@ export default function AIEngine() {
   };
 
   const isRunning = !['idle', 'complete', 'error'].includes(status.step);
-  const emailProspectCount = topProspects.filter(p => p.email).length;
+  const emailProspectCount = topProspects.filter(p => getProspectEmail(p)).length;
+  const filteredEmailProspectCount = filteredProspects.filter(p => getProspectEmail(p)).length;
+  const HOLD_TO_START_MS = 5000;
+
+  const resetHoldStart = useCallback(() => {
+    if (holdStartTimerRef.current) {
+      clearInterval(holdStartTimerRef.current);
+      holdStartTimerRef.current = null;
+    }
+    holdStartAtRef.current = null;
+    setIsHoldingStart(false);
+    setHoldStartProgress(0);
+  }, []);
+
+  const beginHoldStart = () => {
+    if (isRunning || holdStartTimerRef.current) return;
+    setIsHoldingStart(true);
+    holdStartAtRef.current = Date.now();
+    holdStartTimerRef.current = setInterval(() => {
+      const startedAt = holdStartAtRef.current;
+      if (!startedAt) return;
+      const elapsed = Date.now() - startedAt;
+      const nextProgress = Math.min(100, (elapsed / HOLD_TO_START_MS) * 100);
+      setHoldStartProgress(nextProgress);
+      if (elapsed >= HOLD_TO_START_MS) {
+        resetHoldStart();
+        runPipeline();
+      }
+    }, 50);
+  };
+
+  const cancelHoldStart = () => {
+    if (!isHoldingStart) return;
+    if (holdStartProgress > 0 && holdStartProgress < 100) {
+      toast('Hold cancelled before 5 seconds', { icon: '■' });
+    }
+    resetHoldStart();
+  };
+
+  useEffect(() => () => resetHoldStart(), [resetHoldStart]);
+
+  const handleClearClick = () => {
+    if (!clearArmed) {
+      if (isRunning) {
+        stopPipeline();
+      }
+      setClearArmed(true);
+      toast('Click Clear again to remove all AI Engine data', { icon: '⚠️' });
+      return;
+    }
+    clearAllResults();
+    setClearArmed(false);
+  };
 
   return (
     <div className="min-h-screen bg-black p-4 md:p-6 space-y-5">
       <style>{`
         @keyframes dataFlow { 0% { left: 0%; opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } 100% { left: 100%; opacity: 0; } }
         .animate-data-flow { animation: dataFlow 1.5s ease-in-out infinite; }
+        @keyframes electricStream { 0% { transform: translateX(-120%); opacity: 0.1; } 15% { opacity: 0.65; } 85% { opacity: 0.65; } 100% { transform: translateX(120%); opacity: 0.1; } }
+        .animate-electric-stream { animation: electricStream 1.35s linear infinite; }
+        @keyframes electricOutline { 0%, 100% { box-shadow: inset 0 0 18px rgba(34,211,238,0.12), 0 0 14px rgba(34,211,238,0.18); } 50% { box-shadow: inset 0 0 26px rgba(34,211,238,0.22), 0 0 22px rgba(34,211,238,0.32); } }
+        .animate-electric-outline { animation: electricOutline 1.6s ease-in-out infinite; }
         @keyframes scanLine { 0% { top: 0%; } 100% { top: 100%; } }
         .animate-scan { animation: scanLine 2s linear infinite; }
         @keyframes orbFloat { 0%, 100% { transform: translate(0, 0) scale(1); } 33% { transform: translate(10px, -15px) scale(1.1); } 66% { transform: translate(-8px, 10px) scale(0.95); } }
@@ -979,54 +1341,110 @@ export default function AIEngine() {
       {/* Metric Drill-Down Modal */}
       {metricDrill && <MetricDrillDown {...metricDrill} onClose={() => setMetricDrill(null)} />}
 
-      {/* ═══ Hero Header ═══ */}
-      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#06B6D4]/10 via-black to-[#06B6D4]/5 border border-[#06B6D4]/20 p-8">
-        <div className="absolute inset-0 opacity-15" style={{ backgroundImage: 'linear-gradient(rgba(6,182,212,0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(6,182,212,0.15) 1px, transparent 1px)', backgroundSize: '60px 60px' }} />
-        <div className="absolute top-8 right-16 w-36 h-36 bg-[#06B6D4]/15 rounded-full blur-3xl animate-orb" />
-        <div className="absolute bottom-4 left-24 w-28 h-28 bg-[#06B6D4]/10 rounded-full blur-3xl animate-orb" style={{ animationDelay: '2s' }} />
+      {/* ═══ Hero Header / Ops Console ═══ */}
+      <div className="relative overflow-hidden rounded-2xl border border-[#06B6D4]/20 bg-gradient-to-br from-[#041117] via-black to-[#071820] p-6 md:p-7">
+        <div className="absolute inset-0 opacity-20" style={{ backgroundImage: 'linear-gradient(rgba(6,182,212,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(6,182,212,0.12) 1px, transparent 1px)', backgroundSize: '44px 44px' }} />
+        <div className="absolute -top-6 right-8 h-40 w-40 rounded-full bg-[#06B6D4]/20 blur-3xl" />
+        <div className="absolute -bottom-10 left-10 h-44 w-44 rounded-full bg-[#0891B2]/15 blur-3xl" />
 
-        <div className="relative z-10 flex items-start justify-between flex-wrap gap-4">
-          <div>
-            <div className="flex items-center gap-3 mb-2">
-              <div className={cn('w-14 h-14 rounded-2xl bg-[#06B6D4] flex items-center justify-center shadow-2xl shadow-[#06B6D4]/40', isRunning && 'animate-glow')}>
-                <Brain className="w-7 h-7 text-black" />
+        <div className="relative z-10 space-y-5">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="space-y-3">
+              <div className="flex items-center gap-3">
+                <div className={cn('h-14 w-14 rounded-xl bg-[#06B6D4] flex items-center justify-center shadow-[0_12px_40px_rgba(6,182,212,0.35)]', isRunning && 'animate-glow')}>
+                  <Brain className="w-7 h-7 text-black" />
+                </div>
+                <div>
+                  <h1 className="text-3xl font-bold tracking-tight text-white">AI Intelligence Engine</h1>
+                  <p className="text-sm text-slate-400">Vertex AI enrichment + verification gate + BigQuery ML scoring</p>
+                </div>
               </div>
-              <div>
-                <h1 className="text-3xl font-bold text-white tracking-tight">AI Intelligence Engine</h1>
-                <p className="text-sm text-slate-400 mt-0.5">BigQuery ML · Bedrock Claude Opus · Real-time Pipeline</p>
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className={cn('rounded-full border px-2.5 py-1 font-medium', isRunning ? 'border-[#06B6D4]/40 bg-[#06B6D4]/15 text-[#67E8F9]' : 'border-white/10 bg-white/[0.03] text-slate-400')}>
+                  {isRunning ? `Live Stage: ${status.step.toUpperCase()}` : 'Idle'}
+                </span>
+                <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-emerald-300">
+                  Verified DM Emails: {Number(liveNumbers.verifiedDmEmails).toLocaleString()}
+                </span>
+                <span className="rounded-full border border-slate-500/30 bg-slate-500/10 px-2.5 py-1 text-slate-300">
+                  Missing DM Emails: {Number(liveNumbers.missingDmEmails).toLocaleString()}
+                </span>
               </div>
+              {lastRun && <div className="flex items-center gap-2 text-xs text-slate-500"><Clock className="w-3.5 h-3.5" /> Last run: {lastRun.toLocaleString()}</div>}
             </div>
-            {lastRun && <div className="flex items-center gap-2 text-xs text-slate-500 mt-3"><Clock className="w-3.5 h-3.5" /> Last run: {lastRun.toLocaleString()}</div>}
+
+            <div className="w-full max-w-[560px] rounded-xl border border-white/[0.08] bg-black/45 p-3 backdrop-blur-md">
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Engine Controls</p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={isRunning}
+                  onMouseDown={beginHoldStart}
+                  onMouseUp={cancelHoldStart}
+                  onMouseLeave={cancelHoldStart}
+                  onTouchStart={beginHoldStart}
+                  onTouchEnd={cancelHoldStart}
+                  className={cn(
+                    'relative overflow-hidden flex-1 min-w-[220px] rounded-lg border px-4 py-2.5 text-sm font-semibold transition-all',
+                    isRunning
+                      ? 'cursor-not-allowed border-white/10 bg-white/[0.04] text-slate-500'
+                      : 'border-[#06B6D4]/40 bg-[#06B6D4]/15 text-[#67E8F9] hover:bg-[#06B6D4]/25'
+                  )}
+                >
+                  <span
+                    className="pointer-events-none absolute inset-y-0 left-0 bg-[#06B6D4]/35 transition-[width] duration-75"
+                    style={{ width: `${holdStartProgress}%` }}
+                  />
+                  <span className="relative flex items-center justify-center gap-2">
+                    {isHoldingStart ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                    {isHoldingStart ? `Hold ${Math.max(0, ((HOLD_TO_START_MS * (1 - holdStartProgress / 100)) / 1000)).toFixed(1)}s...` : 'Hold 5s to Start Engine'}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={stopPipeline}
+                  disabled={!isRunning}
+                  className={cn(
+                    'rounded-lg border px-4 py-2.5 text-sm font-semibold transition-all',
+                    isRunning
+                      ? 'border-amber-500/40 bg-amber-500/15 text-amber-300 hover:bg-amber-500/25'
+                      : 'cursor-not-allowed border-white/10 bg-white/[0.04] text-slate-500'
+                  )}
+                >
+                  <span className="flex items-center gap-2"><Square className="h-4 w-4" /> Stop Engine</span>
+                </button>
+              </div>
+              <p className="mt-2 text-[11px] text-slate-500">Safety lock enabled: engine only starts after a continuous 5-second hold.</p>
+            </div>
           </div>
-          <div className="flex items-center gap-3 flex-wrap">
-            <button onClick={() => setShowConfig(!showConfig)} className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-sm font-medium transition-all">
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button onClick={() => setShowConfig(!showConfig)} className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-slate-300 hover:bg-white/[0.08]">
               <Settings className="w-4 h-4" /> Configure
             </button>
-            {topProspects.length > 0 && (
-              <>
-                {detectDuplicates() > 0 && (
-                  <button onClick={removeDuplicates}
-                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-400 text-sm font-medium transition-all">
-                    <Copy className="w-4 h-4" /> Remove {detectDuplicates()} Duplicate{detectDuplicates() > 1 ? 's' : ''}
-                  </button>
-                )}
-                <button onClick={clearAllResults}
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 text-sm font-medium transition-all">
-                  <X className="w-4 h-4" /> Clear All
-                </button>
-              </>
-            )}
             {discoveryClinicCount > 0 && (
               <button onClick={importFromDiscovery}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 text-sm font-medium transition-all">
+                className="flex items-center gap-2 rounded-lg border border-emerald-500/35 bg-emerald-500/12 px-3.5 py-2 text-xs font-medium text-emerald-300 hover:bg-emerald-500/20">
                 <Database className="w-4 h-4" /> Import Discovery ({discoveryClinicCount})
               </button>
             )}
-            <button onClick={runPipeline} disabled={isRunning}
-              className={cn('flex items-center gap-2.5 px-6 py-2.5 rounded-xl font-semibold text-sm transition-all shadow-lg',
-                !isRunning ? 'bg-[#06B6D4] text-black hover:bg-[#22D3EE] hover:scale-105' : 'bg-white/5 text-slate-500 cursor-not-allowed')}>
-              {isRunning ? <><Loader2 className="w-4 h-4 animate-spin" /> Running...</> : <><Play className="w-4 h-4" /> Run Pipeline</>}
-            </button>
+            {topProspects.length > 0 && detectDuplicates() > 0 && (
+              <button onClick={removeDuplicates}
+                className="flex items-center gap-2 rounded-lg border border-amber-500/35 bg-amber-500/12 px-3.5 py-2 text-xs font-medium text-amber-300 hover:bg-amber-500/20">
+                <Copy className="w-4 h-4" /> Remove {detectDuplicates()} Duplicate{detectDuplicates() > 1 ? 's' : ''}
+              </button>
+            )}
+            {topProspects.length > 0 && (
+              <button onClick={handleClearClick}
+                className={cn(
+                  'flex items-center gap-2 rounded-lg border px-3.5 py-2 text-xs font-medium transition-all',
+                  clearArmed
+                    ? 'border-red-500/55 bg-red-500/25 text-red-200 hover:bg-red-500/35'
+                    : 'border-red-500/35 bg-red-500/12 text-red-300 hover:bg-red-500/20'
+                )}>
+                <X className="w-4 h-4" /> {clearArmed ? 'Click Again to Clear' : 'Clear'}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -1069,33 +1487,56 @@ export default function AIEngine() {
             <div className="space-y-3 p-4 rounded-xl bg-white/[0.02] border border-white/[0.06]">
               <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">LLM Stack</h4>
               <div className="space-y-2 text-xs">
-                <div className="flex justify-between"><span className="text-slate-500">Email Personalization</span><span className="text-[#06B6D4]">Claude Opus 4.6</span></div>
-                <div className="flex justify-between"><span className="text-slate-500">Competitor Intel</span><span className="text-[#06B6D4]">Claude Haiku 3.5</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">DM Enrichment</span><span className="text-[#06B6D4]">Vertex AI Gemini</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Email Personalization</span><span className="text-[#06B6D4]">Vertex AI Gemini</span></div>
                 <div className="flex justify-between"><span className="text-slate-500">Scoring Model</span><span className="text-emerald-400">BigQuery ML</span></div>
-                <div className="flex justify-between"><span className="text-slate-500">Fallback</span><span className="text-amber-400">Gemini 2.0 Flash</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Fallback</span><span className="text-amber-400">Rules + heuristics</span></div>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* ═══ PIPELINE DATA FLOW — EXPANDABLE NODES ═══ */}
-      <div className="glass-card p-6 relative overflow-hidden">
-        {isRunning && <div className="absolute left-0 right-0 h-px bg-gradient-to-r from-transparent via-[#06B6D4]/60 to-transparent animate-scan z-10" />}
-        <div className="flex items-center justify-between mb-5">
-          <h3 className="text-lg font-semibold text-slate-200 flex items-center gap-2">
-            <Network className="w-5 h-5 text-[#06B6D4]" /> Pipeline Data Flow
-            {isRunning && <span className="text-xs text-[#06B6D4] animate-pulse ml-2">LIVE</span>}
-          </h3>
+      {/* ═══ DATA FLOW — EXPANDABLE NODES ═══ */}
+      <div className="glass-card p-6 relative overflow-hidden border border-[#0f2432] bg-gradient-to-b from-[#050d14] via-[#040910] to-[#04070c]">
+        {isRunning && <div className="absolute left-0 right-0 h-px bg-gradient-to-r from-transparent via-[#22D3EE]/80 to-transparent animate-scan z-10" />}
+        <div className="flex items-start justify-between mb-5 gap-3">
+          <div>
+            <h3 className="text-lg font-semibold text-slate-100 flex items-center gap-2">
+              <Network className="w-5 h-5 text-[#22D3EE]" /> Data Flow
+              {isRunning && <span className="text-[10px] tracking-wider uppercase rounded-full border border-[#22D3EE]/45 bg-[#22D3EE]/12 px-2 py-0.5 text-[#67E8F9] animate-pulse ml-1">Live Transfer</span>}
+            </h3>
+            <p className="text-xs text-slate-500 mt-1">Enterprise pipeline visibility for sync, enrichment, verification, training, and scoring.</p>
+          </div>
           {status.step === 'complete' && <span className="text-xs text-emerald-400 flex items-center gap-1"><Sparkles className="w-3.5 h-3.5" /> Complete</span>}
+        </div>
+
+        <div className="mb-4 grid grid-cols-2 md:grid-cols-4 gap-2">
+          <div className="rounded-lg border border-[#22D3EE]/20 bg-[#22D3EE]/8 px-3 py-2">
+            <p className="text-[10px] uppercase tracking-wider text-slate-500">Current Stage</p>
+            <p className="text-sm font-semibold text-[#67E8F9]">{status.step.toUpperCase()}</p>
+          </div>
+          <div className="rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2">
+            <p className="text-[10px] uppercase tracking-wider text-slate-500">Clinics In Scope</p>
+            <p className="text-sm font-semibold text-white">{Number(liveNumbers.clinics).toLocaleString()}</p>
+          </div>
+          <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/8 px-3 py-2">
+            <p className="text-[10px] uppercase tracking-wider text-slate-500">Verified DM</p>
+            <p className="text-sm font-semibold text-emerald-300">{Number(liveNumbers.verifiedDmEmails).toLocaleString()}</p>
+          </div>
+          <div className="rounded-lg border border-amber-500/25 bg-amber-500/8 px-3 py-2">
+            <p className="text-[10px] uppercase tracking-wider text-slate-500">Missing DM</p>
+            <p className="text-sm font-semibold text-amber-300">{Number(liveNumbers.missingDmEmails).toLocaleString()}</p>
+          </div>
         </div>
 
         <div className="flex items-start gap-0 flex-wrap md:flex-nowrap">
           <PipelineNode icon={Database} label="Data Sync" sublabel="Supabase → BigQuery"
-            active={status.step === 'syncing'} done={['enriching','training','scoring','complete'].includes(status.step)}
+            active={status.step === 'syncing'} done={['enriching','verifying','training','scoring','complete'].includes(status.step)}
+            stepNo={1}
             expanded={expandedNodes['sync']} onToggle={() => toggleNode('sync')}
             stats={liveNumbers.clinics > 0 ? [{ label: 'Clinics', value: liveNumbers.clinics.toLocaleString() }, { label: 'Leads', value: liveNumbers.leads.toLocaleString() }] : undefined}>
-            <p>Paginated sync of all clinics, leads, decision makers, and engagement data from Supabase to BigQuery <code className="text-[#06B6D4]">novalyte_intelligence</code> dataset.</p>
+            <p>Paginated sync of clinics, leads, DM records, and engagement into <code className="text-[#22D3EE]">novalyte_intelligence</code>.</p>
             <div className="grid grid-cols-2 gap-2 mt-2">
               <div className="p-2 rounded bg-white/[0.03]"><span className="text-slate-500 text-[10px]">Tables</span><p className="text-white text-xs">clinics, patient_leads</p></div>
               <div className="p-2 rounded bg-white/[0.03]"><span className="text-slate-500 text-[10px]">Batch Size</span><p className="text-white text-xs">500 rows/batch</p></div>
@@ -1106,23 +1547,44 @@ export default function AIEngine() {
 
           <FlowConnector active={isRunning || status.step === 'complete'} step={status.step} targetStep="syncing" />
 
-          <PipelineNode icon={Search} label="DM Enrichment" sublabel="Apollo + Exa + Bedrock"
-            active={status.step === 'enriching'} done={['training','scoring','complete'].includes(status.step)}
+          <PipelineNode icon={Search} label="DM Enrichment" sublabel="Apollo + Exa + Vertex AI"
+            active={status.step === 'enriching'} done={['verifying','training','scoring','complete'].includes(status.step)}
+            stepNo={2}
             expanded={expandedNodes['enrich']} onToggle={() => toggleNode('enrich')}
             stats={liveNumbers.enriched > 0 ? [{ label: 'DMs Found', value: liveNumbers.enriched.toLocaleString() }] : undefined}>
-            <p>Multi-source enrichment pipeline finds clinic owners, directors, and managers with verified emails.</p>
+            <p>Multi-source enrichment finds owners/directors/managers and builds candidate DM contacts.</p>
             <div className="grid grid-cols-2 gap-2 mt-2">
               <div className="p-2 rounded bg-white/[0.03]"><span className="text-slate-500 text-[10px]">Apollo.io</span><p className="text-white text-xs">People search + email</p></div>
               <div className="p-2 rounded bg-white/[0.03]"><span className="text-slate-500 text-[10px]">Exa AI</span><p className="text-white text-xs">Web scraping + LinkedIn</p></div>
-              <div className="p-2 rounded bg-white/[0.03]"><span className="text-slate-500 text-[10px]">Bedrock Claude</span><p className="text-white text-xs">Name/title extraction</p></div>
+              <div className="p-2 rounded bg-white/[0.03]"><span className="text-slate-500 text-[10px]">Vertex AI</span><p className="text-white text-xs">Name/title extraction</p></div>
               <div className="p-2 rounded bg-white/[0.03]"><span className="text-slate-500 text-[10px]">RevenueBase</span><p className="text-white text-xs">Email verification</p></div>
             </div>
           </PipelineNode>
 
           <FlowConnector active={isRunning || status.step === 'complete'} step={status.step} targetStep="enriching" />
 
+          <PipelineNode icon={CheckCircle} label="Verification Gate" sublabel="DM email quality checks"
+            active={status.step === 'verifying'} done={['training','scoring','complete'].includes(status.step)}
+            stepNo={3}
+            expanded={expandedNodes['verify']} onToggle={() => toggleNode('verify')}
+            stats={Number(liveNumbers.verifiedDmEmails) > 0 ? [
+              { label: 'Verified', value: Number(liveNumbers.verifiedDmEmails).toLocaleString() },
+              { label: 'Missing', value: Number(liveNumbers.missingDmEmails).toLocaleString() },
+            ] : undefined}>
+            <p>Scoring is blocked unless verified decision-maker email coverage passes the minimum quality threshold.</p>
+            <div className="grid grid-cols-2 gap-2 mt-2">
+              <div className="p-2 rounded bg-emerald-500/10 border border-emerald-500/20"><span className="text-emerald-400 text-[10px] font-semibold">Verified</span><p className="text-white text-xs">{Number(liveNumbers.verifiedDmEmails).toLocaleString()}</p></div>
+              <div className="p-2 rounded bg-amber-500/10 border border-amber-500/20"><span className="text-amber-400 text-[10px] font-semibold">Risky</span><p className="text-white text-xs">{Number(liveNumbers.riskyDmEmails).toLocaleString()}</p></div>
+              <div className="p-2 rounded bg-red-500/10 border border-red-500/20"><span className="text-red-400 text-[10px] font-semibold">Invalid</span><p className="text-white text-xs">{Number(liveNumbers.invalidDmEmails).toLocaleString()}</p></div>
+              <div className="p-2 rounded bg-slate-500/10 border border-slate-500/20"><span className="text-slate-400 text-[10px] font-semibold">Missing DM Email</span><p className="text-white text-xs">{Number(liveNumbers.missingDmEmails).toLocaleString()}</p></div>
+            </div>
+          </PipelineNode>
+
+          <FlowConnector active={isRunning || status.step === 'complete'} step={status.step} targetStep="verifying" />
+
           <PipelineNode icon={Brain} label="ML Training" sublabel="BigQuery ML"
             active={status.step === 'training'} done={['scoring','complete'].includes(status.step)}
+            stepNo={4}
             expanded={expandedNodes['train']} onToggle={() => toggleNode('train')}
             stats={liveNumbers.accuracy > 0 ? [{ label: 'Accuracy', value: `${(liveNumbers.accuracy * 100).toFixed(1)}%` }] : undefined}>
             <p>Logistic regression model trained on clinic conversion patterns. Falls back to heuristic scoring when training data is limited (&lt;10 conversions).</p>
@@ -1138,6 +1600,7 @@ export default function AIEngine() {
 
           <PipelineNode icon={Target} label="Lead Scoring" sublabel="Hot / Warm / Cold"
             active={status.step === 'scoring'} done={status.step === 'complete'}
+            stepNo={5}
             expanded={expandedNodes['score']} onToggle={() => toggleNode('score')}
             stats={liveNumbers.hot > 0 ? [{ label: 'Hot', value: liveNumbers.hot.toLocaleString() }, { label: 'Warm', value: liveNumbers.warm.toLocaleString() }] : undefined}>
             <p>Every clinic gets a 0-100% lead score based on conversion likelihood. Higher score = more likely to become a paying client.</p>
@@ -1196,11 +1659,13 @@ export default function AIEngine() {
 
       {/* ═══ LIVE METRICS — CLICKABLE ═══ */}
       {status.step !== 'idle' && (
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-8 gap-4">
           {[
             { icon: Database, label: 'Clinics Synced', value: liveNumbers.clinics, color: '#06B6D4', metric: 'clinics' },
             { icon: Zap, label: 'Leads Synced', value: liveNumbers.leads, color: '#06B6D4', metric: 'leads' },
             { icon: Users, label: 'DMs Enriched', value: liveNumbers.enriched, color: '#10B981', metric: 'enriched' },
+            { icon: CheckCircle, label: 'Verified DM Email', value: liveNumbers.verifiedDmEmails, color: '#10B981', metric: 'enriched' },
+            { icon: AlertCircle, label: 'Missing DM Email', value: liveNumbers.missingDmEmails, color: '#64748b', metric: 'enriched' },
             { icon: Gauge, label: 'Accuracy', value: liveNumbers.accuracy, color: '#06B6D4', metric: 'accuracy' },
             { icon: Target, label: 'Hot Leads', value: liveNumbers.hot, color: '#EF4444', metric: 'hot' },
             { icon: Activity, label: 'Warm Leads', value: liveNumbers.warm, color: '#F59E0B', metric: 'warm' },
@@ -1229,6 +1694,21 @@ export default function AIEngine() {
                 <span className="text-xs text-slate-500 font-normal ml-2">{filteredProspects.length} of {topProspects.length}</span>
               </h2>
               <div className="flex items-center gap-2 flex-wrap">
+                <button onClick={selectFilteredClinics} disabled={filteredProspects.length === 0}
+                  className={cn('flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border',
+                    filteredProspects.length > 0
+                      ? 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
+                      : 'bg-white/5 text-slate-500 border-white/10 cursor-not-allowed')}>
+                  <CheckSquare className="w-3.5 h-3.5" /> Select Filtered ({filteredProspects.length})
+                </button>
+                <button onClick={pushFilteredToCRM} disabled={pushingToCRM || filteredProspects.length === 0}
+                  className={cn('flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border',
+                    filteredProspects.length > 0
+                      ? 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                      : 'bg-white/5 text-slate-500 border-white/10 cursor-not-allowed')}>
+                  {pushingToCRM ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ExternalLink className="w-3.5 h-3.5" />}
+                  Push Filtered ({filteredProspects.length}) to CRM
+                </button>
                 {selectedClinics.size > 0 && (
                   <>
                     <button onClick={pushToCRM} disabled={pushingToCRM}
@@ -1244,7 +1724,7 @@ export default function AIEngine() {
                     addingToSequence ? 'bg-white/5 text-slate-500' :
                     emailProspectCount > 0 ? 'bg-[#06B6D4] text-black hover:bg-[#22D3EE]' : 'bg-white/5 text-slate-500 cursor-not-allowed')}>
                   {addingToSequence ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> {sequenceProgress.sent}/{sequenceProgress.total} ({sequenceProgress.model})</> :
-                    <><Send className="w-3.5 h-3.5" /> {selectedClinics.size > 0 ? `Stage ${Math.min(selectedClinics.size, 100)} for Drip` : `Stage Top ${Math.min(emailProspectCount, 100)} for Drip`}</>}
+                    <><Send className="w-3.5 h-3.5" /> {selectedClinics.size > 0 ? `Push ${selectedClinics.size} to Email Outreach` : `Push ${filteredEmailProspectCount} to Email Outreach`}</>}
                 </button>
                 <button onClick={exportProspects} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-xs font-medium transition-all">
                   <Download className="w-3.5 h-3.5" /> CSV
@@ -1304,6 +1784,27 @@ export default function AIEngine() {
               </div>
               <input type="text" placeholder="Search clinics..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
                 className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-slate-200 text-xs placeholder-slate-500 w-48" />
+              <div className="flex items-center gap-1.5 ml-auto">
+                <span className="text-xs text-slate-500">View:</span>
+                {([
+                  { id: 'priority', label: 'Priority Queue' },
+                  { id: 'cards', label: 'Cards' },
+                  { id: 'table', label: 'Table' },
+                ] as const).map(v => (
+                  <button
+                    key={v.id}
+                    onClick={() => setProspectView(v.id)}
+                    className={cn(
+                      'px-2.5 py-1 rounded-lg text-xs font-medium transition-all',
+                      prospectView === v.id
+                        ? 'bg-[#06B6D4]/20 text-[#06B6D4] border border-[#06B6D4]/30'
+                        : 'bg-white/5 text-slate-400 hover:bg-white/10'
+                    )}
+                  >
+                    {v.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* Sequence progress */}
@@ -1319,7 +1820,7 @@ export default function AIEngine() {
           </div>
 
           {/* Table */}
-          <div className="overflow-x-auto">
+          <div className={cn('overflow-x-auto', prospectView !== 'table' && 'hidden')}>
             <table className="w-full">
               <thead>
                 <tr className="text-slate-500 border-b border-white/[0.06] bg-white/[0.02]">
@@ -1339,7 +1840,8 @@ export default function AIEngine() {
               <tbody>
                 {filteredProspects.map((p, i) => (
                   <tr key={`${p.clinic_id}-${i}`} className={cn('border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors group',
-                    selectedClinics.has(p.clinic_id) && 'bg-[#06B6D4]/5')}>
+                    selectedClinics.has(p.clinic_id) && 'bg-[#06B6D4]/5')}
+                    onClick={() => openClinicIntel(p)}>
                     <td className="py-3 px-3">
                       <button onClick={() => toggleClinic(p.clinic_id)} className="text-slate-500 hover:text-[#06B6D4]">
                         {selectedClinics.has(p.clinic_id) ? <CheckSquare className="w-4 h-4 text-[#06B6D4]" /> : <Square className="w-4 h-4" />}
@@ -1352,16 +1854,6 @@ export default function AIEngine() {
                     <td className="py-3 px-3">
                       <div className="flex items-center gap-2">
                         <div className="text-slate-200 font-medium text-sm">{p.name}</div>
-                        {verificationStatusMap[p.clinic_id] === 'Verified_Active' && (
-                          <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[9px] font-semibold border border-emerald-500/30 flex items-center gap-0.5">
-                            <CheckCircle className="w-2.5 h-2.5" /> Verified
-                          </span>
-                        )}
-                        {verificationStatusMap[p.clinic_id] === 'Sequence_Active' && (
-                          <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[9px] font-semibold border border-amber-500/30 flex items-center gap-0.5">
-                            <Mail className="w-2.5 h-2.5" /> Sequence
-                          </span>
-                        )}
                         {p.is_duplicate && (
                           <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 text-[9px] font-semibold border border-amber-500/30 flex items-center gap-0.5">
                             <Copy className="w-2.5 h-2.5" /> DUP
@@ -1377,8 +1869,8 @@ export default function AIEngine() {
                     <td className="py-3 px-3 text-slate-300 text-sm">{p.city}, {p.state}</td>
                     <td className="py-3 px-3">
                       {p.phone && <div className="text-slate-300 text-xs flex items-center gap-1"><Phone className="w-3 h-3" /> {p.phone}</div>}
-                      {p.email && <div className="text-slate-500 text-xs flex items-center gap-1 truncate max-w-[180px]"><Mail className="w-3 h-3" /> {p.email}</div>}
-                      {!p.phone && !p.email && <span className="text-slate-600 text-xs">No contact</span>}
+                      {getProspectEmail(p) && <div className="text-slate-500 text-xs flex items-center gap-1 truncate max-w-[180px]"><Mail className="w-3 h-3" /> {getProspectEmail(p)}</div>}
+                      {!p.phone && !getProspectEmail(p) && <span className="text-slate-600 text-xs">No contact</span>}
                     </td>
                     <td className="py-3 px-3">
                       <div className="flex items-center gap-2">
@@ -1402,23 +1894,90 @@ export default function AIEngine() {
                       <div className="flex items-center gap-1"><Gauge className="w-3 h-3 text-[#06B6D4]" /><span className="text-slate-300 text-xs">{p.affluence_score}/10</span></div>
                     </td>
                     <td className="py-3 px-3">
-                      <button onClick={() => setSelectedProspect(p)} className="px-2.5 py-1 rounded-lg bg-[#06B6D4]/20 text-[#06B6D4] text-xs font-medium hover:bg-[#06B6D4]/30 transition-colors opacity-0 group-hover:opacity-100">View</button>
+                      <button onClick={(e) => { e.stopPropagation(); openClinicIntel(p); }} className="px-2.5 py-1 rounded-lg bg-[#06B6D4]/20 text-[#06B6D4] text-xs font-medium hover:bg-[#06B6D4]/30 transition-colors opacity-0 group-hover:opacity-100">View</button>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+
+          {/* Cards View */}
+          {prospectView === 'cards' && (
+            <div className="p-4 grid sm:grid-cols-2 xl:grid-cols-3 gap-3">
+              {filteredProspects.map((p, i) => {
+                const action = getRecommendedAction(p);
+                const adCount = getAdSignalCount(p.ad_signals);
+                return (
+                  <button
+                    key={`card-${p.clinic_id}-${i}`}
+                    onClick={() => openClinicIntel(p)}
+                    className="text-left rounded-xl border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05] p-4 transition-all"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-100">{p.name}</p>
+                        <p className="text-xs text-slate-500">{p.city}, {p.state}</p>
+                      </div>
+                      <span className={cn('text-[10px] px-2 py-0.5 rounded-full font-semibold',
+                        action === 'call_immediately' ? 'bg-red-500/20 text-red-300 border border-red-500/30' :
+                        action === 'email_sequence' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' :
+                        'bg-slate-500/20 text-slate-300 border border-slate-500/30')}>
+                        {action === 'call_immediately' ? 'Call First' : action === 'email_sequence' ? 'Sequence' : 'Research'}
+                      </span>
+                    </div>
+                    <div className="mt-3 flex items-center justify-between text-xs">
+                      <span className="text-[#06B6D4] font-bold">Intent {(Number(p.intent_score ?? computeIntentScore(p))).toFixed(0)}</span>
+                      <span className="text-slate-400">Lead {(Number(p.propensity_score || 0) * 100).toFixed(0)}%</span>
+                    </div>
+                    <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-400">
+                      <span>Ads: {adCount > 0 ? `${adCount} channels` : 'none detected'}</span>
+                      <span>•</span>
+                      <span>{p.propensity_tier}</span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Priority Queue View */}
+          {prospectView === 'priority' && (
+            <div className="p-4 space-y-2">
+              {filteredProspects.map((p, i) => {
+                const action = getRecommendedAction(p);
+                return (
+                  <button
+                    key={`priority-${p.clinic_id}-${i}`}
+                    onClick={() => openClinicIntel(p)}
+                    className="w-full text-left rounded-xl border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05] px-4 py-3 transition-all flex items-center gap-3"
+                  >
+                    <div className={cn('w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold',
+                      i < 3 ? 'bg-red-500/20 text-red-300 border border-red-500/30' : 'bg-white/5 text-slate-400')}>
+                      {i + 1}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-semibold text-slate-100 truncate">{p.name}</p>
+                        <span className="text-[10px] text-slate-500">{p.city}, {p.state}</span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-1">
+                        Intent {Number(p.intent_score ?? computeIntentScore(p)).toFixed(0)} • Lead {(Number(p.propensity_score || 0) * 100).toFixed(0)}% • Ads {getAdSignalCount(p.ad_signals)}
+                      </p>
+                    </div>
+                    <span className={cn('text-[10px] px-2 py-1 rounded-full font-semibold',
+                      action === 'call_immediately' ? 'bg-red-500/20 text-red-300 border border-red-500/30' :
+                      action === 'email_sequence' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' :
+                      'bg-slate-500/20 text-slate-300 border border-slate-500/30')}>
+                      {action === 'call_immediately' ? 'Call Immediately' : action === 'email_sequence' ? 'Sequence Next' : 'Research First'}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
-
-      <VerificationControlPanel
-        selectedClinicIds={selectedClinics}
-        onStatusesUpdated={(next) => {
-          if (Object.keys(next).length === 0) return;
-          setVerificationStatusMap(prev => ({ ...prev, ...next }));
-        }}
-      />
 
       {/* ═══ 5-Day Drip Sequence Schedule ═══ */}
       {dripSequences.length > 0 && (
@@ -1514,8 +2073,55 @@ export default function AIEngine() {
               </div>
             </div>
             <div className="space-y-3">
-              {selectedProspect.phone && <div><p className="text-xs text-slate-500 mb-1">Phone</p><p className="text-sm text-slate-200">{selectedProspect.phone}</p></div>}
-              {selectedProspect.email && <div><p className="text-xs text-slate-500 mb-1">Email</p><p className="text-sm text-slate-200">{selectedProspect.email}</p></div>}
+              <div className="grid md:grid-cols-2 gap-4">
+                <div className="p-3 rounded-lg bg-white/[0.02] border border-white/[0.06]">
+                  <p className="text-xs text-slate-500 mb-2">Contact Intel</p>
+                  {selectedProspect.phone && <p className="text-sm text-slate-200 mb-1"><span className="text-slate-500">Phone:</span> {selectedProspect.phone}</p>}
+                  {getProspectEmail(selectedProspect) && <p className="text-sm text-slate-200 mb-1"><span className="text-slate-500">Email:</span> {getProspectEmail(selectedProspect)}</p>}
+                  {selectedProspect.dm_name && <p className="text-sm text-slate-200"><span className="text-slate-500">Decision Maker:</span> {selectedProspect.dm_name}</p>}
+                  {!selectedProspect.phone && !getProspectEmail(selectedProspect) && !selectedProspect.dm_name && <p className="text-xs text-slate-500">No direct contact intel available</p>}
+                </div>
+                <div className="p-3 rounded-lg bg-white/[0.02] border border-white/[0.06]">
+                  <p className="text-xs text-slate-500 mb-2">Business Intel</p>
+                  <p className="text-sm text-slate-200 mb-1"><span className="text-slate-500">Website:</span> {selectedProspect.website || 'N/A'}</p>
+                  <p className="text-sm text-slate-200 mb-1"><span className="text-slate-500">Rating:</span> {selectedProspect.rating ? `${selectedProspect.rating}/5` : 'N/A'}</p>
+                  <p className="text-sm text-slate-200"><span className="text-slate-500">Reviews:</span> {selectedProspect.review_count || 0}</p>
+                </div>
+              </div>
+              <div className="p-3 rounded-lg bg-[#06B6D4]/5 border border-[#06B6D4]/20">
+                <p className="text-xs text-slate-500 mb-2">Outreach Intel</p>
+                <div className="grid md:grid-cols-3 gap-2 text-xs">
+                  <p className="text-slate-300"><span className="text-slate-500">Tier:</span> {selectedProspect.propensity_tier || 'unknown'}</p>
+                  <p className="text-slate-300"><span className="text-slate-500">Lead Score:</span> {((selectedProspect.propensity_score || 0) * 100).toFixed(0)}%</p>
+                  <p className="text-slate-300"><span className="text-slate-500">Intent Score:</span> {Number(selectedProspect.intent_score ?? computeIntentScore(selectedProspect)).toFixed(0)}</p>
+                </div>
+                <div className="mt-2 text-xs text-slate-300">
+                  <span className="text-slate-500">Ad Channels:</span>{' '}
+                  {getAdSignalCount(selectedProspect.ad_signals) > 0
+                    ? [
+                        selectedProspect.ad_signals?.google ? 'Google' : null,
+                        selectedProspect.ad_signals?.meta ? 'Meta' : null,
+                        selectedProspect.ad_signals?.linkedin ? 'LinkedIn' : null,
+                        selectedProspect.ad_signals?.reddit ? 'Reddit' : null,
+                      ].filter(Boolean).join(', ')
+                    : 'No paid channels detected'}
+                </div>
+                <div className="mt-2 text-xs">
+                  <span className="text-slate-500">Best Course:</span>{' '}
+                  <span className={cn(
+                    'font-semibold',
+                    getRecommendedAction(selectedProspect) === 'call_immediately' ? 'text-red-300' :
+                    getRecommendedAction(selectedProspect) === 'email_sequence' ? 'text-amber-300' :
+                    'text-slate-300'
+                  )}>
+                    {getRecommendedAction(selectedProspect) === 'call_immediately'
+                      ? 'Call immediately before adding to sequence'
+                      : getRecommendedAction(selectedProspect) === 'email_sequence'
+                        ? 'Add to sequence with personalized opening'
+                        : 'Research first, then outreach'}
+                  </span>
+                </div>
+              </div>
               {selectedProspect.services?.length > 0 && (
                 <div><p className="text-xs text-slate-500 mb-2">Services</p>
                   <div className="flex flex-wrap gap-2">{selectedProspect.services.map((s: string, i: number) => (

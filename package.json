@@ -12,7 +12,8 @@
     "test": "vitest",
     "scan:keywords": "npx tsx src/scripts/scanKeywords.ts",
     "discover:clinics": "npx tsx src/scripts/discoverClinics.ts",
-    "sync:crm": "npx tsx src/scripts/syncCrm.ts"
+    "sync:crm": "npx tsx src/scripts/syncCrm.ts",
+    "verify:dm-emails": "npx tsx src/scripts/verifyDmEmails.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.95.3",
@@ -23,6 +24,7 @@
     "lucide-react": "^0.323.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "react-force-graph-2d": "^1.29.1",
     "react-globe.gl": "^2.37.0",
     "react-hot-toast": "^2.4.1",
     "react-router-dom": "^6.22.0",

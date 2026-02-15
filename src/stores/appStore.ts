@@ -77,6 +77,33 @@ function bgSync(fn: () => Promise<void>) {
   fn().catch(err => console.warn('Supabase sync error:', err));
 }
 
+function isGenericDecisionMakerEmail(email?: string): boolean {
+  const local = String(email || '').split('@')[0]?.toLowerCase() || '';
+  return new Set([
+    'info', 'contact', 'office', 'admin', 'frontdesk', 'hello', 'support', 'help',
+    'reception', 'appointments', 'billing', 'marketing', 'sales', 'hr', 'noreply', 'no-reply', 'webmaster', 'mail',
+  ]).has(local);
+}
+
+function selectBestDecisionMaker(dms: any[]) {
+  if (!Array.isArray(dms) || !dms.length) return null;
+  const rolePriority = ['owner', 'medical_director', 'clinic_manager', 'practice_administrator', 'operations_manager', 'marketing_director'];
+  const validVerified = dms.filter((d: any) => d?.email && d?.emailVerificationStatus === 'valid' && !isGenericDecisionMakerEmail(d.email));
+  const risky = dms.filter((d: any) => d?.email && d?.emailVerificationStatus === 'risky' && !isGenericDecisionMakerEmail(d.email));
+  const unknown = dms.filter((d: any) => d?.email && d?.emailVerificationStatus !== 'invalid' && !isGenericDecisionMakerEmail(d.email));
+  const rankedPool = validVerified.length ? validVerified : (risky.length ? risky : unknown);
+
+  if (rankedPool.length > 0) {
+    for (const role of rolePriority) {
+      const found = rankedPool.find((d: any) => d.role === role);
+      if (found) return found;
+    }
+    return rankedPool.reduce((a: any, b: any) => a.confidence > b.confidence ? a : b);
+  }
+
+  return dms.reduce((a: any, b: any) => a.confidence > b.confidence ? a : b);
+}
+
 /** Background auto-enrichment for newly added contacts */
 function bgAutoEnrich(contacts: CRMContact[], set: any, get: any) {
   (async () => {
@@ -85,11 +112,8 @@ function bgAutoEnrich(contacts: CRMContact[], set: any, get: any) {
       try {
         const dms = await enrichmentService.findDecisionMakers(contact.clinic);
         if (dms.length === 0) continue;
-        const rolePriority = ['owner', 'medical_director', 'clinic_manager', 'practice_administrator', 'operations_manager', 'marketing_director'];
-        const withEmail = dms.filter(d => !!d.email);
-        const best = withEmail.length > 0
-          ? (rolePriority.reduce<typeof dms[number] | null>((f, r) => f || withEmail.find(d => d.role === r) || null, null) || withEmail.reduce((a, b) => a.confidence > b.confidence ? a : b))
-          : dms.reduce((a, b) => a.confidence > b.confidence ? a : b);
+        const best = selectBestDecisionMaker(dms);
+        if (!best) continue;
 
         const updatedContact: CRMContact = { ...contact, decisionMaker: best, clinic: { ...contact.clinic, managerName: `${best.firstName} ${best.lastName}`.trim(), managerEmail: best.email } };
         const { score, priority } = computeLeadScore(updatedContact);

@@ -85,6 +85,7 @@ function dmToRow(dm: DecisionMaker) {
     confidence: dm.confidence, enriched_at: iso(dm.enrichedAt),
     source: dm.source || null,
     email_verified: dm.emailVerified || false,
+    email_verification_status: dm.emailVerificationStatus || null,
   };
 }
 function rowToDm(r: any): DecisionMaker {
@@ -100,6 +101,40 @@ function rowToDm(r: any): DecisionMaker {
     emailVerified: r.email_verified || false,
     emailVerificationStatus: r.email_verification_status || undefined,
   };
+}
+
+function normalizeDecisionMakerRole(roleOrTitle?: string): DecisionMaker['role'] {
+  const raw = String(roleOrTitle || '').toLowerCase();
+  if (raw.includes('owner') || raw.includes('founder') || raw.includes('ceo')) return 'owner';
+  if (raw.includes('medical director') || raw.includes('physician') || raw.includes('doctor')) return 'medical_director';
+  if (raw.includes('administrator') || raw.includes('practice admin')) return 'practice_administrator';
+  if (raw.includes('marketing')) return 'marketing_director';
+  if (raw.includes('operations') || raw.includes('ops')) return 'operations_manager';
+  return 'clinic_manager';
+}
+
+function splitName(fullName?: string): { firstName: string; lastName: string } {
+  const clean = String(fullName || '').trim();
+  if (!clean) return { firstName: 'Unknown', lastName: 'Contact' };
+  const [firstName, ...rest] = clean.split(/\s+/);
+  return { firstName: firstName || 'Unknown', lastName: rest.join(' ') || 'Contact' };
+}
+
+function slugToken(value?: string): string {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+}
+
+function isGenericEmail(email?: string): boolean {
+  const local = String(email || '').split('@')[0]?.toLowerCase() || '';
+  const genericPrefixes = new Set([
+    'info', 'contact', 'office', 'admin', 'frontdesk', 'hello', 'support', 'help',
+    'reception', 'appointments', 'billing', 'marketing', 'sales', 'hr', 'noreply', 'no-reply', 'webmaster', 'mail',
+  ]);
+  return genericPrefixes.has(local);
 }
 
 // ─── KeywordTrend mappers ───
@@ -191,6 +226,25 @@ function rowToCampaign(r: any): Campaign {
 
 class SupabaseSyncService {
   private ready = false;
+  private readonly PAGE_SIZE = 1000;
+
+  private async fetchAllRows(table: string, select = '*'): Promise<any[]> {
+    if (!supabase) return [];
+    const rows: any[] = [];
+    let from = 0;
+    while (true) {
+      const { data, error } = await supabase
+        .from(table)
+        .select(select)
+        .range(from, from + this.PAGE_SIZE - 1);
+      if (error) throw new Error(`${table} fetch: ${error.message}`);
+      if (!data?.length) break;
+      rows.push(...data);
+      if (data.length < this.PAGE_SIZE) break;
+      from += this.PAGE_SIZE;
+    }
+    return rows;
+  }
 
   /** Test connection and verify tables exist */
   async init(): Promise<boolean> {
@@ -222,9 +276,13 @@ class SupabaseSyncService {
 
   async fetchMarkets(): Promise<MarketZone[] | null> {
     if (!this.ready || !supabase) return null;
-    const { data, error } = await supabase.from('markets').select('*');
-    if (error || !data?.length) return null;
-    return data.map(rowToMarket);
+    try {
+      const data = await this.fetchAllRows('markets');
+      if (!data.length) return null;
+      return data.map(rowToMarket);
+    } catch {
+      return null;
+    }
   }
 
   // ─── Clinics ───
@@ -255,17 +313,104 @@ class SupabaseSyncService {
       const { error: legacyError } = await supabase.from('clinics').upsert(legacyChunk, { onConflict: 'id' });
       if (legacyError) console.error('syncClinics fallback error:', legacyError.message);
     }
+
+    // Backfill decision_makers from clinic-level enrichment cache before downstream scoring sync.
+    const dmRows: any[] = [];
+    const seenDmIds = new Set<string>();
+
+    for (const clinic of clinics) {
+      const pushDmRow = (row: any) => {
+        if (!row?.id || seenDmIds.has(row.id)) return;
+        seenDmIds.add(row.id);
+        dmRows.push(row);
+      };
+
+      for (const ec of clinic.enrichedContacts || []) {
+        const email = ec.email || null;
+        const phone = ec.phone || null;
+        if (!email && !phone) continue;
+        const token = slugToken(email || phone || ec.name) || `ec-${dmRows.length}`;
+        const dmId = `dm-${clinic.id}-${token}`;
+        const { firstName, lastName } = splitName(ec.name);
+        const rawStatus = String(ec.emailVerificationStatus || 'unknown').toLowerCase();
+        const status = (rawStatus === 'valid' || rawStatus === 'invalid' || rawStatus === 'risky' || rawStatus === 'unknown')
+          ? rawStatus
+          : 'unknown';
+        // `email_verified` means deliverable/valid (safe to outreach).
+        // If status is missing but emailVerified is true, treat as valid (back-compat for older persisted shapes).
+        const verified = status === 'valid' || (Boolean(ec.emailVerified) && status === 'unknown');
+
+        pushDmRow({
+          id: dmId,
+          clinic_id: clinic.id,
+          first_name: firstName,
+          last_name: lastName,
+          title: ec.title || '',
+          role: normalizeDecisionMakerRole(ec.role || ec.title),
+          email,
+          phone,
+          linkedin_url: ec.linkedInUrl || null,
+          confidence: Number(ec.confidence || 0),
+          enriched_at: ec.enrichedAt || new Date().toISOString(),
+          source: ec.source || 'manual',
+          email_verified: Boolean(verified),
+          email_verification_status: status,
+        });
+      }
+
+      const managerCandidateEmail = clinic.managerEmail || clinic.ownerEmail || clinic.email || null;
+      if (managerCandidateEmail || clinic.managerName || clinic.ownerName || clinic.phone) {
+        const managerName = clinic.managerName || clinic.ownerName || 'Clinic Contact';
+        const token = slugToken(managerCandidateEmail || clinic.phone || managerName) || 'manager';
+        const dmId = `dm-${clinic.id}-${token}`;
+        const { firstName, lastName } = splitName(managerName);
+        const inferredStatus = managerCandidateEmail && isGenericEmail(managerCandidateEmail) ? 'unknown' : 'unknown';
+        pushDmRow({
+          id: dmId,
+          clinic_id: clinic.id,
+          first_name: firstName,
+          last_name: lastName,
+          title: clinic.ownerName ? 'Owner' : 'Clinic Manager',
+          role: clinic.ownerName ? 'owner' : 'clinic_manager',
+          email: managerCandidateEmail,
+          phone: clinic.phone || null,
+          linkedin_url: null,
+          confidence: managerCandidateEmail ? 55 : 35,
+          enriched_at: new Date().toISOString(),
+          source: 'manual',
+          email_verified: false,
+          email_verification_status: inferredStatus,
+        });
+      }
+    }
+
+    for (let i = 0; i < dmRows.length; i += 200) {
+      const chunk = dmRows.slice(i, i + 200);
+      const { error } = await supabase.from('decision_makers').upsert(chunk, { onConflict: 'id' });
+      if (!error) continue;
+      const legacyChunk = chunk.map(dm => {
+        const legacy = { ...dm };
+        delete legacy.email_verification_status;
+        return legacy;
+      });
+      const { error: legacyError } = await supabase.from('decision_makers').upsert(legacyChunk, { onConflict: 'id' });
+      if (legacyError) console.error('syncClinics decision_makers backfill error:', legacyError.message);
+    }
   }
 
   async fetchClinics(marketMap: Record<string, MarketZone>): Promise<Clinic[] | null> {
     if (!this.ready || !supabase) return null;
-    const { data, error } = await supabase.from('clinics').select('*');
-    if (error || !data?.length) return null;
-    return data.map(r => {
-      const market = marketMap[r.market_id];
-      if (!market) return null;
-      return rowToClinic(r, market);
-    }).filter(Boolean) as Clinic[];
+    try {
+      const data = await this.fetchAllRows('clinics');
+      if (!data.length) return null;
+      return data.map(r => {
+        const market = marketMap[r.market_id];
+        if (!market) return null;
+        return rowToClinic(r, market);
+      }).filter(Boolean) as Clinic[];
+    } catch {
+      return null;
+    }
   }
 
   // ─── Keyword Trends ───
@@ -281,13 +426,17 @@ class SupabaseSyncService {
 
   async fetchKeywordTrends(marketMap: Record<string, MarketZone>): Promise<KeywordTrend[] | null> {
     if (!this.ready || !supabase) return null;
-    const { data, error } = await supabase.from('keyword_trends').select('*');
-    if (error || !data?.length) return null;
-    return data.map(r => {
-      const market = marketMap[r.market_id];
-      if (!market) return null;
-      return rowToTrend(r, market);
-    }).filter(Boolean) as KeywordTrend[];
+    try {
+      const data = await this.fetchAllRows('keyword_trends');
+      if (!data.length) return null;
+      return data.map(r => {
+        const market = marketMap[r.market_id];
+        if (!market) return null;
+        return rowToTrend(r, market);
+      }).filter(Boolean) as KeywordTrend[];
+    } catch {
+      return null;
+    }
   }
 
   // ─── Decision Makers ───
@@ -299,8 +448,13 @@ class SupabaseSyncService {
 
   async fetchDecisionMakers(): Promise<Record<string, DecisionMaker> | null> {
     if (!this.ready || !supabase) return null;
-    const { data, error } = await supabase.from('decision_makers').select('*');
-    if (error || !data?.length) return null;
+    let data: any[] = [];
+    try {
+      data = await this.fetchAllRows('decision_makers');
+    } catch {
+      return null;
+    }
+    if (!data.length) return null;
     const map: Record<string, DecisionMaker> = {};
     for (const r of data) map[r.id] = rowToDm(r);
     return map;
@@ -366,34 +520,34 @@ class SupabaseSyncService {
     if (!this.ready || !supabase) return null;
 
     // Fetch all needed data in parallel
-    const [contactsRes, clinicsRes, dmsRes, activitiesRes, trendsRes, junctionRes] = await Promise.all([
-      supabase.from('contacts').select('*'),
-      supabase.from('clinics').select('*'),
-      supabase.from('decision_makers').select('*'),
-      supabase.from('activities').select('*').order('timestamp', { ascending: true }),
-      supabase.from('keyword_trends').select('*'),
-      supabase.from('contact_keyword_matches').select('*'),
+    const [contactRows, clinicRowsRaw, dmRowsRaw, activityRowsRaw, trendRowsRaw, junctionRowsRaw] = await Promise.all([
+      this.fetchAllRows('contacts'),
+      this.fetchAllRows('clinics'),
+      this.fetchAllRows('decision_makers'),
+      this.fetchAllRows('activities'),
+      this.fetchAllRows('keyword_trends'),
+      this.fetchAllRows('contact_keyword_matches'),
     ]);
 
-    if (contactsRes.error || !contactsRes.data?.length) return null;
+    if (!contactRows.length) return null;
 
     // Build lookup maps
-    const clinicRows = new Map((clinicsRes.data || []).map(r => [r.id, r]));
-    const dmRows = new Map((dmsRes.data || []).map(r => [r.id, r]));
+    const clinicRows = new Map((clinicRowsRaw || []).map(r => [r.id, r]));
+    const dmRows = new Map((dmRowsRaw || []).map(r => [r.id, r]));
     const activityMap = new Map<string, any[]>();
-    for (const a of (activitiesRes.data || [])) {
+    for (const a of (activityRowsRaw || []).sort((a, b) => String(a.timestamp || '').localeCompare(String(b.timestamp || '')))) {
       if (!activityMap.has(a.contact_id)) activityMap.set(a.contact_id, []);
       activityMap.get(a.contact_id)!.push(a);
     }
-    const trendRows = new Map((trendsRes.data || []).map(r => [r.id, r]));
+    const trendRows = new Map((trendRowsRaw || []).map(r => [r.id, r]));
     const junctionMap = new Map<string, string[]>();
-    for (const j of (junctionRes.data || [])) {
+    for (const j of (junctionRowsRaw || [])) {
       if (!junctionMap.has(j.contact_id)) junctionMap.set(j.contact_id, []);
       junctionMap.get(j.contact_id)!.push(j.keyword_trend_id);
     }
 
     const contacts: CRMContact[] = [];
-    for (const cr of contactsRes.data) {
+    for (const cr of contactRows) {
       const clinicRow = clinicRows.get(cr.clinic_id);
       if (!clinicRow) continue;
       const market = marketMap[clinicRow.market_id];
@@ -495,14 +649,45 @@ class SupabaseSyncService {
   async syncVoiceCalls(calls: VoiceCall[]): Promise<void> {
     if (!this.ready || !supabase || !calls.length) return;
     const rows = calls.map(callToRow);
-    const { error } = await supabase.from('voice_calls').upsert(rows, { onConflict: 'id' });
+    const contactIds = [...new Set(rows.map(r => r.contact_id).filter(Boolean))];
+
+    let validContactIds = new Set<string>();
+    if (contactIds.length > 0) {
+      const { data, error: contactsError } = await supabase
+        .from('contacts')
+        .select('id')
+        .in('id', contactIds);
+      if (contactsError) {
+        console.error('syncVoiceCalls contact precheck error:', contactsError.message);
+      } else {
+        validContactIds = new Set((data || []).map(c => c.id));
+      }
+    }
+
+    const rowsToSync =
+      contactIds.length > 0
+        ? rows.filter(r => !r.contact_id || validContactIds.has(r.contact_id))
+        : rows;
+
+    const droppedRows = rows.length - rowsToSync.length;
+    if (droppedRows > 0) {
+      console.warn(`syncVoiceCalls skipped ${droppedRows} orphan call(s) with missing contact_id FK.`);
+    }
+    if (!rowsToSync.length) return;
+
+    const { error } = await supabase.from('voice_calls').upsert(rowsToSync, { onConflict: 'id' });
     if (error) console.error('syncVoiceCalls error:', error.message);
   }
 
   async fetchVoiceCalls(): Promise<{ active: VoiceCall[]; history: VoiceCall[] } | null> {
     if (!this.ready || !supabase) return null;
-    const { data, error } = await supabase.from('voice_calls').select('*');
-    if (error || !data?.length) return null;
+    let data: any[] = [];
+    try {
+      data = await this.fetchAllRows('voice_calls');
+    } catch {
+      return null;
+    }
+    if (!data.length) return null;
     const all = data.map(rowToCall);
     return {
       active: all.filter(c => ['queued', 'ringing', 'in_progress'].includes(c.status)),
@@ -520,8 +705,13 @@ class SupabaseSyncService {
 
   async fetchCampaigns(): Promise<Campaign[] | null> {
     if (!this.ready || !supabase) return null;
-    const { data, error } = await supabase.from('campaigns').select('*');
-    if (error || !data?.length) return null;
+    let data: any[] = [];
+    try {
+      data = await this.fetchAllRows('campaigns');
+    } catch {
+      return null;
+    }
+    if (!data.length) return null;
     return data.map(rowToCampaign);
   }
 

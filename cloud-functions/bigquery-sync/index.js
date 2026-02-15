@@ -4,11 +4,156 @@ const { createClient } = require('@supabase/supabase-js');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const REVENUEBASE_KEY = process.env.REVENUEBASE_API_KEY || process.env.VITE_REVENUEBASE_API_KEY || '';
+const EXPLORIUM_KEY = process.env.EXPLORIUM_API_KEY || process.env.VITE_EXPLORIUM_API_KEY || '';
 const GCP_PROJECT = 'warp-486714';
 const DATASET = 'novalyte_intelligence';
 
 const bq = new BigQuery({ projectId: GCP_PROJECT });
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+function verificationRank(status, emailVerified) {
+  if (emailVerified || status === 'valid' || status === 'verified') return 4;
+  if (status === 'risky') return 3;
+  if (status === 'unknown' || status === 'pending') return 2;
+  if (status === 'invalid') return 1;
+  return 0;
+}
+
+function dmConfidence(dm) {
+  const base = Number(dm?.confidence || 0);
+  const status = (dm?.email_verification_status || '').toLowerCase();
+  const verified = !!dm?.email_verified;
+  const rank = verificationRank(status, verified);
+  // confidence is a bounded [0,1] score used for gating and QA
+  const normalized = Math.min(1, Math.max(0, (base / 100) * 0.6 + (rank / 4) * 0.4));
+  return Number(normalized.toFixed(3));
+}
+
+function pickBestDM(dms = []) {
+  if (!dms.length) return null;
+  const sorted = [...dms].sort((a, b) => {
+    const aStatus = (a?.email_verification_status || '').toLowerCase();
+    const bStatus = (b?.email_verification_status || '').toLowerCase();
+    const aRank = verificationRank(aStatus, !!a?.email_verified);
+    const bRank = verificationRank(bStatus, !!b?.email_verified);
+    if (bRank !== aRank) return bRank - aRank;
+    return Number(b?.confidence || 0) - Number(a?.confidence || 0);
+  });
+  return sorted[0];
+}
+
+function normalizeVerificationStatus(rawStatus) {
+  const status = String(rawStatus || '').toLowerCase();
+  if (status === 'valid' || status === 'verified' || status === 'deliverable' || status === 'safe') {
+    return { status: 'valid', verified: true };
+  }
+  if (status === 'invalid' || status === 'undeliverable' || status === 'bounce') {
+    return { status: 'invalid', verified: false };
+  }
+  if (status === 'risky' || status === 'catch-all' || status === 'catch_all' || status === 'accept_all') {
+    return { status: 'risky', verified: false };
+  }
+  if (status === 'pending') {
+    return { status: 'pending', verified: false };
+  }
+  return { status: 'unknown', verified: false };
+}
+
+async function verifyEmailWithRevenueBase(email) {
+  if (!REVENUEBASE_KEY || !email) return { status: 'unknown', verified: false };
+  try {
+    const response = await fetch('https://api.revenuebase.ai/v1/process-email', {
+      method: 'POST',
+      headers: {
+        'x-key': REVENUEBASE_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ email }),
+    });
+    if (!response.ok) {
+      if (response.status === 422 || response.status === 400) {
+        return { status: 'invalid', verified: false };
+      }
+      return { status: 'unknown', verified: false };
+    }
+    const data = await response.json();
+    return normalizeVerificationStatus(data.status || data.result || data.verification_status || '');
+  } catch (err) {
+    console.warn(`RevenueBase verification failed for ${email}:`, err?.message || err);
+    return { status: 'unknown', verified: false };
+  }
+}
+
+async function verifyEmailWithExplorium(email) {
+  if (!EXPLORIUM_KEY || !email) return { status: 'unknown', verified: false };
+
+  const payload = JSON.stringify({ email });
+  const attempts = [
+    {
+      url: 'https://api.explorium.ai/api/bundle/v1/enrich/email-validation',
+      headers: {
+        'Content-Type': 'application/json',
+        'API_KEY': EXPLORIUM_KEY,
+      },
+    },
+    {
+      url: 'https://app.explorium.ai/api/bundle/v1/enrich/email-validation',
+      headers: {
+        'Content-Type': 'application/json',
+        'API_KEY': EXPLORIUM_KEY,
+      },
+    },
+    {
+      url: 'https://api.explorium.ai/api/bundle/v1/enrich/email-validation',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': EXPLORIUM_KEY,
+      },
+    },
+  ];
+
+  for (const attempt of attempts) {
+    try {
+      const response = await fetch(attempt.url, {
+        method: 'POST',
+        headers: attempt.headers,
+        body: payload,
+      });
+
+      if (!response.ok) {
+        if (response.status === 422 || response.status === 400) {
+          return { status: 'invalid', verified: false, provider: 'explorium' };
+        }
+        continue;
+      }
+
+      const data = await response.json();
+      const status = normalizeVerificationStatus(
+        data?.status ||
+        data?.result ||
+        data?.verification_status ||
+        data?.data?.status ||
+        data?.email_validation_status
+      );
+      return { ...status, provider: 'explorium' };
+    } catch (err) {
+      console.warn(`Explorium verification attempt failed for ${email}:`, err?.message || err);
+    }
+  }
+
+  return { status: 'unknown', verified: false };
+}
+
+async function verifyEmailRuntime(email) {
+  const rb = await verifyEmailWithRevenueBase(email);
+  if (rb.status !== 'unknown') return { ...rb, provider: 'revenuebase' };
+
+  const ex = await verifyEmailWithExplorium(email);
+  if (ex.status !== 'unknown') return ex;
+
+  return { status: 'unknown', verified: false };
+}
 
 // Paginate through ALL rows in a Supabase table (default limit is 1000)
 async function fetchAll(table, select = '*') {
@@ -36,6 +181,19 @@ functions.http('bigquerySyncHandler', async (req, res) => {
 
   try {
     console.log('Starting Supabase → BigQuery sync (all rows)...');
+
+    // Ensure clinics table contains enrichment + verification columns used by gating
+    await bq.query(`
+      ALTER TABLE \`${GCP_PROJECT}.${DATASET}.clinics\`
+      ADD COLUMN IF NOT EXISTS dm_name STRING,
+      ADD COLUMN IF NOT EXISTS dm_title STRING,
+      ADD COLUMN IF NOT EXISTS dm_email STRING,
+      ADD COLUMN IF NOT EXISTS dm_source STRING,
+      ADD COLUMN IF NOT EXISTS email_verified BOOL,
+      ADD COLUMN IF NOT EXISTS email_verification_status STRING,
+      ADD COLUMN IF NOT EXISTS dm_confidence FLOAT64,
+      ADD COLUMN IF NOT EXISTS enrichment_status STRING
+    `);
     
     // Fetch ALL clinics (paginated)
     const clinics = await fetchAll('clinics');
@@ -73,18 +231,89 @@ functions.http('bigquerySyncHandler', async (req, res) => {
       if (a.type === 'response_received') { eng.response_count++; eng.last_response_date = a.timestamp; }
     });
 
-    // Map clinics to BigQuery rows (include DM enrichment data)
-    const clinicRows = clinics.map(c => {
+    let clinicsWithDM = 0;
+    let clinicsWithVerifiedDMEmail = 0;
+    let clinicsWithRiskyDMEmail = 0;
+    let clinicsWithInvalidDMEmail = 0;
+    let clinicsMissingDM = 0;
+    let realtimeVerifications = 0;
+
+    const contexts = clinics.map(c => {
       const market = marketMap.get(c.market_id) || {};
       const eng = engagementMap.get(c.id) || {};
       const clinicDMs = dmByClinic.get(c.id) || [];
-      const bestDM = clinicDMs.find(d => d.email && d.email_verified) || clinicDMs.find(d => d.email) || clinicDMs[0];
-      
+      const bestDM = pickBestDM(clinicDMs);
+      const fallbackEmail = c.manager_email || c.owner_email || c.email || null;
+      const fallbackDM = fallbackEmail ? {
+        id: null,
+        clinic_id: c.id,
+        first_name: (c.manager_name || c.owner_name || '').split(' ')[0] || 'Team',
+        last_name: (c.manager_name || c.owner_name || '').split(' ').slice(1).join(' ') || '',
+        title: c.manager_name ? 'Manager' : (c.owner_name ? 'Owner' : 'Decision Maker'),
+        role: 'clinic_manager',
+        email: fallbackEmail,
+        source: 'clinic_record',
+        confidence: 55,
+        email_verified: false,
+        email_verification_status: null,
+      } : null;
+      return { c, market, eng, bestDM: bestDM || fallbackDM };
+    });
+
+    const emailsToVerify = [];
+    const seenEmails = new Set();
+    for (const ctx of contexts) {
+      const bestDM = ctx.bestDM;
+      const email = String(bestDM?.email || '').trim().toLowerCase();
+      if (!email || seenEmails.has(email)) continue;
+      const persisted = normalizeVerificationStatus(bestDM?.email_verification_status || '');
+      if (bestDM?.email_verified || persisted.status !== 'unknown') continue;
+      seenEmails.add(email);
+      emailsToVerify.push(email);
+    }
+
+    const verificationMap = new Map();
+    const MAX_RUNTIME_VERIFICATIONS = 300;
+    const verificationTarget = emailsToVerify.slice(0, MAX_RUNTIME_VERIFICATIONS);
+    for (let i = 0; i < verificationTarget.length; i += 5) {
+      const batch = verificationTarget.slice(i, i + 5);
+      const results = await Promise.all(batch.map(async (email) => ({ email, ...(await verifyEmailRuntime(email)) })));
+      results.forEach(r => verificationMap.set(r.email, { status: r.status, verified: r.verified }));
+      realtimeVerifications += batch.length;
+    }
+
+    // Map clinics to BigQuery rows (include DM enrichment + verification data)
+    const clinicRows = contexts.map(({ c, market, eng, bestDM }) => {
+      const persisted = normalizeVerificationStatus(bestDM?.email_verification_status || '');
+      const email = String(bestDM?.email || '').trim().toLowerCase();
+      const runtime = verificationMap.get(email);
+      const verificationStatus = runtime?.status || (bestDM?.email_verified ? 'valid' : persisted.status);
+      const isVerified = runtime?.verified || !!bestDM?.email_verified || verificationStatus === 'valid' || verificationStatus === 'verified';
+      const confidence = dmConfidence({
+        ...bestDM,
+        email_verification_status: verificationStatus,
+        email_verified: isVerified,
+      });
+
+      if (bestDM?.email) clinicsWithDM++;
+      else clinicsMissingDM++;
+      if (isVerified && bestDM?.email) clinicsWithVerifiedDMEmail++;
+      else if (verificationStatus === 'risky') clinicsWithRiskyDMEmail++;
+      else if (verificationStatus === 'invalid') clinicsWithInvalidDMEmail++;
+
       return {
         clinic_id: c.id, name: c.name, type: c.type || 'clinic',
         street: c.street || '', city: c.city || '', state: c.state || '', zip: c.zip || '',
         phone: c.phone || null,
         email: bestDM?.email || c.email || c.manager_email || c.owner_email || null,
+        dm_name: bestDM ? `${bestDM.first_name || ''} ${bestDM.last_name || ''}`.trim() : null,
+        dm_title: bestDM?.title || bestDM?.role || null,
+        dm_email: bestDM?.email || null,
+        dm_source: bestDM?.source || null,
+        email_verified: isVerified,
+        email_verification_status: verificationStatus || null,
+        dm_confidence: confidence,
+        enrichment_status: bestDM?.id ? (isVerified ? 'verified' : 'enriched') : 'missing',
         website: c.website || null,
         rating: c.rating != null ? Number(c.rating) : null,
         review_count: c.review_count != null ? Number(c.review_count) : null,
@@ -173,6 +402,15 @@ functions.http('bigquerySyncHandler', async (req, res) => {
       leadsSynced: leadRows.length,
       decisionMakers: dms.length,
       enrichedWithEmail: dms.filter(d => d.email).length,
+      enrichment: {
+        clinicsWithDM,
+        clinicsWithVerifiedDMEmail,
+        clinicsWithRiskyDMEmail,
+        clinicsWithInvalidDMEmail,
+        clinicsMissingDM,
+        realtimeVerifications,
+        realtimeVerificationEnabled: !!(REVENUEBASE_KEY || EXPLORIUM_KEY),
+      },
     });
   } catch (error) {
     console.error('Sync error:', error);

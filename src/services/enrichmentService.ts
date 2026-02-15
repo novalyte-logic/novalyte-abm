@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { Clinic, DecisionMaker, DecisionMakerRole, DataSource } from '../types';
 import { emailIntelService } from './emailIntelService';
+import { supabase } from '../lib/supabase';
 
 interface ApolloSearchResponse {
   people?: Array<{
@@ -164,8 +165,9 @@ export class EnrichmentService {
             confidence: candidate.confidence,
             enrichedAt: new Date(),
             source: (candidate.source === 'exa_scrape' ? 'website_scrape' : candidate.source === 'gemini_extract' ? 'website_scrape' : 'manual') as DataSource,
-            emailVerified: candidate.verified,
-            emailVerificationStatus: candidate.verificationStatus,
+            // `emailVerified` means deliverable/valid (safe to outreach). Status carries risky/invalid/unknown.
+            emailVerified: candidate.verificationStatus === 'valid',
+            emailVerificationStatus: candidate.verificationStatus || 'unknown',
           });
         }
       }
@@ -196,13 +198,40 @@ export class EnrichmentService {
   }
 
   /**
+   * Fetch NPI Registry results.
+   * In browsers, the public NPI API can be blocked by CORS; we attempt a Supabase Edge Function proxy first.
+   */
+  private async npiGet(params: Record<string, any>): Promise<any> {
+    // Prefer Supabase Edge Function proxy if available (avoids browser CORS failures).
+    if (supabase) {
+      try {
+        const { data, error } = await supabase.functions.invoke('npi-proxy', {
+          body: { params },
+        });
+        if (!error && data) return data;
+      } catch {
+        // Fall back to direct request below.
+      }
+    }
+
+    const response = await axios.get('https://npiregistry.cms.hhs.gov/api/', { params });
+    return response.data;
+  }
+
+  /**
    * Verify all decision maker emails via RevenueBase
    * Marks each DM with emailVerified + emailVerificationStatus
    * Adjusts confidence scores based on verification result
    */
   private async verifyEmails(dms: DecisionMaker[]): Promise<void> {
     if (!this.revenueBaseKey) return;
-    const withEmail = dms.filter(d => d.email && !d.emailVerified);
+    const withEmail = dms.filter(d => {
+      if (!d.email) return false;
+      // Only verify if we don't already have a non-unknown status.
+      const status = (d.emailVerificationStatus || 'unknown').toLowerCase();
+      if (status && status !== 'unknown') return false;
+      return true;
+    });
     if (!withEmail.length) return;
 
     const verifyOne = async (dm: DecisionMaker) => {
@@ -213,23 +242,26 @@ export class EnrichmentService {
           { headers: { 'x-key': this.revenueBaseKey, 'Content-Type': 'application/json' }, timeout: 10000 }
         );
         const data = response.data;
-        dm.emailVerified = true;
-        const status = (data.status || data.result || data.verification_status || '').toLowerCase();
-        if (status === 'valid' || status === 'deliverable' || status === 'safe') {
+        const raw = (data.status || data.result || data.verification_status || '').toLowerCase();
+        if (raw === 'valid' || raw === 'deliverable' || raw === 'safe' || raw === 'verified') {
           dm.emailVerificationStatus = 'valid';
+          dm.emailVerified = true;
           dm.confidence = Math.min(dm.confidence + 20, 99);
-        } else if (status === 'invalid' || status === 'undeliverable' || status === 'bounce') {
+        } else if (raw === 'invalid' || raw === 'undeliverable' || raw === 'bounce') {
           dm.emailVerificationStatus = 'invalid';
+          dm.emailVerified = false;
           dm.confidence = Math.max(dm.confidence - 30, 5);
-        } else if (status === 'risky' || status === 'catch-all' || status === 'catch_all' || status === 'accept_all') {
+        } else if (raw === 'risky' || raw === 'catch-all' || raw === 'catch_all' || raw === 'accept_all') {
           dm.emailVerificationStatus = 'risky';
+          dm.emailVerified = false;
           dm.confidence = Math.min(dm.confidence + 5, 80);
         } else {
           dm.emailVerificationStatus = 'unknown';
+          dm.emailVerified = false;
         }
       } catch (err: any) {
         if (err?.response?.status === 422 || err?.response?.status === 400) {
-          dm.emailVerified = true;
+          dm.emailVerified = false;
           dm.emailVerificationStatus = 'invalid';
           dm.confidence = Math.max(dm.confidence - 30, 5);
         } else {
@@ -407,9 +439,8 @@ export class EnrichmentService {
       if (clinic.address?.city) params.city = clinic.address.city;
       if (clinic.address?.state) params.state = clinic.address.state;
 
-      const response = await axios.get('https://npiregistry.cms.hhs.gov/api/', { params });
-
-      const results = response.data.results || [];
+      const data = await this.npiGet(params);
+      const results = data?.results || [];
 
       const dms: DecisionMaker[] = [];
 
@@ -498,8 +529,8 @@ export class EnrichmentService {
             ...search,
           };
 
-          const response = await axios.get('https://npiregistry.cms.hhs.gov/api/', { params });
-          const results = response.data.results || [];
+          const data = await this.npiGet(params);
+          const results = data?.results || [];
 
           if (results.length > 0) {
             const dms: DecisionMaker[] = [];

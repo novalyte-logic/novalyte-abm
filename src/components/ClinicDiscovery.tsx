@@ -93,7 +93,18 @@ function ClinicDiscovery() {
   const selectBestDM = (dms: any[]) => {
     if (!dms?.length) return null;
     const rolePriority = ['owner', 'medical_director', 'clinic_manager', 'practice_administrator', 'operations_manager', 'marketing_director'];
-    const withEmail = dms.filter((d: any) => !!d.email);
+    const isGenericEmail = (email?: string) => {
+      const local = String(email || '').split('@')[0]?.toLowerCase() || '';
+      return new Set([
+        'info', 'contact', 'office', 'admin', 'frontdesk', 'hello', 'support', 'help',
+        'reception', 'appointments', 'billing', 'marketing', 'sales', 'hr', 'noreply', 'no-reply', 'webmaster', 'mail',
+      ]).has(local);
+    };
+    const verified = dms.filter((d: any) => d?.email && d?.emailVerificationStatus === 'valid' && !isGenericEmail(d.email));
+    const risky = dms.filter((d: any) => d?.email && d?.emailVerificationStatus === 'risky' && !isGenericEmail(d.email));
+    const unknown = dms.filter((d: any) => d?.email && d?.emailVerificationStatus !== 'invalid' && !isGenericEmail(d.email));
+    const withEmail = verified.length ? verified : (risky.length ? risky : unknown);
+
     for (const role of rolePriority) {
       const found = withEmail.find((d: any) => d.role === role);
       if (found) return found;
@@ -245,6 +256,8 @@ function ClinicDiscovery() {
               confidence: d.confidence || 0,
               source: d.source || 'unknown',
               enrichedAt: new Date().toISOString(),
+              emailVerified: d.emailVerified || false,
+              emailVerificationStatus: d.emailVerificationStatus || 'unknown',
             }));
           const upd: any = { managerName: `${best.firstName} ${best.lastName}`.trim(), managerEmail: best.email, enrichedContacts };
           if (best.role === 'owner' || best.role === 'medical_director') { upd.ownerName = upd.managerName; upd.ownerEmail = best.email; }
