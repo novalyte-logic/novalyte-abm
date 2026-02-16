@@ -9,6 +9,7 @@ import { useAppStore } from '../stores/appStore';
 import { clinicService } from '../services/clinicService';
 import { discoveryService } from '../services/discoveryService';
 import { enrichmentService } from '../services/enrichmentService';
+import { googleVerifyService } from '../services/googleVerifyService';
 import { Clinic, CRMContact, MarketZone } from '../types';
 import { computeLeadScore } from '../utils/leadScoring';
 import { cn } from '../utils/cn';
@@ -30,6 +31,7 @@ function ClinicDiscovery() {
   const [discoveryProgress, setDiscoveryProgress] = useState<string | null>(null);
   const [discoveryStats, setDiscoveryStats] = useState<{ marketsScanned: number; totalFound: number } | null>(null);
   const [selectedClinic, setSelectedClinic] = useState<Clinic | null>(null);
+  const [isGoogleVerifying, setIsGoogleVerifying] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('');
   const [sortKey, setSortKey] = useState<SortKey>('rating');
@@ -228,6 +230,35 @@ function ClinicDiscovery() {
       const emailCount = enrichedContacts.filter((c: any) => c.email).length;
       toast.success(`Found ${enrichedContacts.length} contacts (${emailCount} emails)`, { id: `enrich-${clinic.id}` });
     } catch { toast.error('Enrichment failed', { id: `enrich-${clinic.id}` }); }
+  };
+
+  const handleGoogleVerifyClinic = async (clinic: Clinic) => {
+    if (!googleVerifyService.isConfigured) {
+      toast.error('Google verify is not configured (VITE_GOOGLE_VERIFY_FUNCTION_URL)');
+      return;
+    }
+    setIsGoogleVerifying(true);
+    toast.loading('Verifying with Google...', { id: `gverify-${clinic.id}` });
+    try {
+      // For patient leads, we don't have a clinic DM email; for clinics/CRM this still helps confirm site + contact email.
+      const leadEmail = clinic.managerEmail || clinic.ownerEmail || clinic.email || null;
+      const result = await googleVerifyService.verifyClinic(clinic, leadEmail);
+      const updates: any = {
+        googleVerifyStatus: result.status,
+        googleVerifyOfficialWebsite: result.officialWebsite || undefined,
+        googleVerifyConfirmedEmail: result.confirmedEmail || undefined,
+        googleVerifyFoundEmails: result.foundEmails || [],
+        googleVerifyCheckedAt: result.checkedAt,
+      };
+      if (result.officialWebsite) updates.website = result.officialWebsite;
+      updateClinic(clinic.id, updates);
+      if (selectedClinic?.id === clinic.id) setSelectedClinic({ ...clinic, ...updates } as any);
+      toast.success(`Google verify: ${result.status}`, { id: `gverify-${clinic.id}` });
+    } catch (err: any) {
+      toast.error(err?.message || 'Google verify failed', { id: `gverify-${clinic.id}` });
+    } finally {
+      setIsGoogleVerifying(false);
+    }
   };
 
   const handleBulkSaveAll = async () => {
@@ -751,6 +782,58 @@ function ClinicDiscovery() {
                   <span className="text-sm text-slate-500">Website</span>
                   <a href={selectedClinic.website} target="_blank" rel="noopener noreferrer" className="text-sm font-medium text-blue-400 hover:underline flex items-center gap-1">
                     <Globe className="w-3.5 h-3.5" /> Visit Site <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+              )}
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-slate-500">Google Verify</span>
+                <div className="flex items-center gap-2">
+                  {selectedClinic.googleVerifyStatus ? (
+                    <span
+                      className={cn(
+                        'text-[10px] font-semibold px-2 py-1 rounded border',
+                        selectedClinic.googleVerifyStatus === 'Verified'
+                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                          : selectedClinic.googleVerifyStatus === 'Mismatch'
+                            ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                            : 'bg-slate-500/10 text-slate-400 border-white/[0.06]'
+                      )}
+                    >
+                      {selectedClinic.googleVerifyStatus}
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-slate-600">—</span>
+                  )}
+                  <button
+                    onClick={() => handleGoogleVerifyClinic(selectedClinic)}
+                    disabled={isGoogleVerifying}
+                    className="text-xs text-novalyte-400 hover:underline flex items-center gap-1 disabled:opacity-50"
+                    title={googleVerifyService.isConfigured ? 'Verify with Google' : 'Set VITE_GOOGLE_VERIFY_FUNCTION_URL'}
+                  >
+                    <CheckCircle2 className={cn('w-3 h-3', isGoogleVerifying && 'animate-pulse')} />
+                    Verify with Google
+                  </button>
+                </div>
+              </div>
+              {selectedClinic.googleVerifyConfirmedEmail && (
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-slate-500">Confirmed Email</span>
+                  <a href={`mailto:${selectedClinic.googleVerifyConfirmedEmail}`} className="text-sm font-medium text-novalyte-400 hover:underline">
+                    {selectedClinic.googleVerifyConfirmedEmail}
+                  </a>
+                </div>
+              )}
+              {selectedClinic.googleVerifyOfficialWebsite && (
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-slate-500">Official Website</span>
+                  <a
+                    href={selectedClinic.googleVerifyOfficialWebsite}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm font-medium text-blue-400 hover:underline flex items-center gap-1 truncate max-w-[240px]"
+                  >
+                    <ExternalLink className="w-3 h-3 shrink-0" />
+                    {selectedClinic.googleVerifyOfficialWebsite.replace(/^https?:\/\//, '')}
                   </a>
                 </div>
               )}

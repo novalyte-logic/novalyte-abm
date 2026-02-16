@@ -143,6 +143,12 @@ export interface Clinic {
   // Optional cached owner / director info
   ownerName?: string;
   ownerEmail?: string;
+  // Google verification (live search + website scrape)
+  googleVerifyStatus?: 'Verified' | 'Mismatch' | 'Not Found';
+  googleVerifyOfficialWebsite?: string;
+  googleVerifyConfirmedEmail?: string;
+  googleVerifyFoundEmails?: string[];
+  googleVerifyCheckedAt?: string;
   // All enriched decision makers (from Apollo, NPI, etc.)
   enrichedContacts?: EnrichedContact[];
   verificationStatus?: 'Ready' | 'Verified_Active' | 'Sequence_Active';
@@ -217,7 +223,7 @@ export interface CRMContact {
 // Activity log entry for CRM timeline
 export interface Activity {
   id: string;
-  type: 'email_sent' | 'call_made' | 'call_scheduled' | 'note_added' | 'status_change' | 'follow_up_set' | 'enriched';
+  type: 'email_sent' | 'email_reply' | 'call_made' | 'call_scheduled' | 'note_added' | 'status_change' | 'follow_up_set' | 'enriched';
   description: string;
   timestamp: Date;
   metadata?: Record<string, any>;

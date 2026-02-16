@@ -177,7 +177,9 @@ async function run() {
             email_verified: status === 'valid',
             email_verification_status: status,
           })
-          .eq('email', email);
+          .eq('email', email)
+          .eq('email_verified', false)
+          .or('email_verification_status.is.null,email_verification_status.eq.unknown');
       }
 
       if (processed % 25 === 0) {
@@ -199,4 +201,3 @@ run().catch((err) => {
   console.error(err instanceof Error ? err.message : err);
   process.exit(1);
 });
-

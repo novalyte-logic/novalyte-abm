@@ -8,9 +8,15 @@ set -e
 PROJECT_ID="warp-486714"
 REGION="us-central1"
 SUPABASE_URL="https://zatsxsaetybdyzhxbnnj.supabase.co"
-SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InphdHN4c2FldHliZHl6aHhibm5qIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MDQ2MDExMiwiZXhwIjoyMDg2MDM2MTEyfQ.7tDKpMkqPfjbehLxBRwqng59NhyODA8MltX-LADIC4U"
+SUPABASE_SERVICE_ROLE_KEY="${SUPABASE_SERVICE_ROLE_KEY:-${VITE_SUPABASE_SERVICE_ROLE_KEY:-}}"
 REVENUEBASE_KEY="${REVENUEBASE_API_KEY:-${VITE_REVENUEBASE_API_KEY:-}}"
 EXPLORIUM_KEY="${EXPLORIUM_API_KEY:-${VITE_EXPLORIUM_API_KEY:-}}"
+
+if [ -z "${SUPABASE_SERVICE_ROLE_KEY}" ]; then
+  echo "❌ Missing SUPABASE_SERVICE_ROLE_KEY (or VITE_SUPABASE_SERVICE_ROLE_KEY)."
+  echo "   Export it in your shell before running this deploy script."
+  exit 1
+fi
 
 echo "🚀 Deploying BigQuery ML Pipeline Cloud Functions..."
 echo "Project: $PROJECT_ID"
@@ -20,7 +26,7 @@ echo ""
 # Deploy bigquery-sync
 echo "📦 Deploying bigquery-sync..."
 cd bigquery-sync
-SYNC_ENV_VARS="SUPABASE_URL=$SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY=$SUPABASE_KEY"
+SYNC_ENV_VARS="SUPABASE_URL=$SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY=$SUPABASE_SERVICE_ROLE_KEY"
 if [ -n "$REVENUEBASE_KEY" ]; then
   SYNC_ENV_VARS="$SYNC_ENV_VARS,REVENUEBASE_API_KEY=$REVENUEBASE_KEY"
   echo "ℹ️ RevenueBase key detected: runtime DM email verification enabled."

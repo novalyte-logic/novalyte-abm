@@ -46,6 +46,7 @@ interface AppState {
   setIsDiscovering: (isDiscovering: boolean) => void;
   addContact: (contact: CRMContact) => void;
   addContacts: (contacts: CRMContact[]) => void;
+  removeContact: (id: string) => void;
   updateContact: (id: string, updates: Partial<CRMContact>) => void;
   selectContact: (contact: CRMContact | null) => void;
   updateContactStatus: (id: string, status: ContactStatus) => void;
@@ -76,6 +77,8 @@ interface AppState {
 function bgSync(fn: () => Promise<void>) {
   fn().catch(err => console.warn('Supabase sync error:', err));
 }
+
+let outreachPollTimer: any = null;
 
 function isGenericDecisionMakerEmail(email?: string): boolean {
   const local = String(email || '').split('@')[0]?.toLowerCase() || '';
@@ -249,6 +252,14 @@ const createPersistedStore = (persist as any)((set: any, get: any) => ({
     }
   },
 
+  removeContact: (id: string) => {
+    set((state: any) => ({
+      contacts: state.contacts.filter((c: any) => c.id !== id),
+      selectedContact: state.selectedContact?.id === id ? null : state.selectedContact,
+    }));
+    bgSync(() => supabaseSync.deleteContact(id));
+  },
+
   updateContact: (id: string, updates: Partial<any>) => {
     set((state: any) => ({
       contacts: state.contacts.map((c: any) =>
@@ -319,6 +330,7 @@ const createPersistedStore = (persist as any)((set: any, get: any) => ({
 
   addSentEmails: (emails: SentEmail[]) => {
     set((state: any) => ({ sentEmails: [...state.sentEmails, ...emails] }));
+    bgSync(() => supabaseSync.syncSentEmails(emails));
   },
   updateSentEmails: (emails: SentEmail[]) => {
     set((state: any) => {
@@ -326,6 +338,7 @@ const createPersistedStore = (persist as any)((set: any, get: any) => ({
       for (const e of emails) map.set(e.id, e);
       return { sentEmails: Array.from(map.values()) };
     });
+    bgSync(() => supabaseSync.syncSentEmails(emails));
   },
 
   setCurrentView: (view: any) => set({ currentView: view }),
@@ -389,6 +402,7 @@ const createPersistedStore = (persist as any)((set: any, get: any) => ({
         const mergedContacts = mergeById(state.contacts, remote.contacts);
         const mergedClinics = mergeById(state.clinics, remote.clinics);
         const mergedTrends = mergeById(state.keywordTrends, remote.keywordTrends);
+        const mergedSentEmails = mergeById(state.sentEmails, remote.sentEmails || []);
         set({
           markets: remote.markets.length > 0 ? remote.markets : state.markets,
           clinics: mergedClinics,
@@ -397,6 +411,7 @@ const createPersistedStore = (persist as any)((set: any, get: any) => ({
           activeCalls: remote.activeCalls.length > 0 ? remote.activeCalls : state.activeCalls,
           callHistory: remote.callHistory.length > 0 ? remote.callHistory : state.callHistory,
           campaigns: remote.campaigns.length > 0 ? remote.campaigns : state.campaigns,
+          sentEmails: mergedSentEmails,
         });
         console.log('✓ Supabase data merged');
       }
@@ -410,7 +425,55 @@ const createPersistedStore = (persist as any)((set: any, get: any) => ({
         activeCalls: fresh.activeCalls,
         callHistory: fresh.callHistory,
         campaigns: fresh.campaigns,
+        sentEmails: fresh.sentEmails,
       }));
+
+      // Lightweight polling for outreach events + inbound replies (keeps CRM pipeline live).
+      if (!outreachPollTimer) {
+        outreachPollTimer = setInterval(async () => {
+          try {
+            const lastEventAt = localStorage.getItem('novalyte_outreach_last_event_at') || new Date(Date.now() - 60 * 60 * 1000).toISOString();
+            const lastReplyAt = localStorage.getItem('novalyte_outreach_last_reply_at') || new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+            const newEmails = await supabaseSync.fetchSentEmailsSince(lastEventAt);
+            if (newEmails.length > 0) {
+              // Merge into store
+              set((state: any) => {
+                const map = new Map(state.sentEmails.map((e: any) => [e.id, e]));
+                for (const e of newEmails) map.set(e.id, e);
+                return { sentEmails: Array.from(map.values()) };
+              });
+              const maxTs = newEmails.reduce((m, e) => Math.max(m, new Date(e.lastEventAt).getTime()), new Date(lastEventAt).getTime());
+              localStorage.setItem('novalyte_outreach_last_event_at', new Date(maxTs).toISOString());
+            }
+
+            const newReplyActs = await supabaseSync.fetchEmailReplyActivitiesSince(lastReplyAt);
+            if (newReplyActs.length > 0) {
+              set((state: any) => {
+                const next = state.contacts.map((c: any) => {
+                  const adds = newReplyActs.filter(x => x.contactId === c.id).map(x => x.activity);
+                  if (adds.length === 0) return c;
+                  const existingIds = new Set((c.activities || []).map((a: any) => a.id));
+                  const mergedActs = [...(c.activities || [])];
+                  for (const a of adds) {
+                    if (!existingIds.has(a.id)) mergedActs.push(a);
+                  }
+                  const tagSet = new Set<string>(Array.isArray(c.tags) ? c.tags : []);
+                  tagSet.add('replied');
+                  tagSet.add('account');
+                  const nextStatus = (c.status === 'qualified' || c.status === 'not_interested') ? c.status : 'follow_up';
+                  return { ...c, activities: mergedActs, tags: Array.from(tagSet), status: nextStatus };
+                });
+                return { contacts: next };
+              });
+              const maxTs = newReplyActs.reduce((m, x) => Math.max(m, new Date(x.activity.timestamp).getTime()), new Date(lastReplyAt).getTime());
+              localStorage.setItem('novalyte_outreach_last_reply_at', new Date(maxTs).toISOString());
+            }
+          } catch {
+            // ignore polling errors
+          }
+        }, 15000);
+      }
     }
   },
 
@@ -426,6 +489,7 @@ const createPersistedStore = (persist as any)((set: any, get: any) => ({
       activeCalls: state.activeCalls,
       callHistory: state.callHistory,
       campaigns: state.campaigns,
+      sentEmails: state.sentEmails,
     });
     set({ isSyncing: false });
   },
@@ -444,6 +508,7 @@ const createPersistedStore = (persist as any)((set: any, get: any) => ({
         activeCalls: remote.activeCalls,
         callHistory: remote.callHistory,
         campaigns: remote.campaigns,
+        sentEmails: remote.sentEmails || [],
       });
     }
     set({ isSyncing: false });

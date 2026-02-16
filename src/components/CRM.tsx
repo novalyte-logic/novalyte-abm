@@ -11,10 +11,12 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
 import { enrichmentService } from '../services/enrichmentService';
+import { googleVerifyService } from '../services/googleVerifyService';
 import { analyzeCompetitorIntel, CompetitorIntel, buildAttributionReport, AttributionReport } from '../services/intelligenceService';
 import { ContactStatus, Priority, Clinic, CRMContact, Activity } from '../types';
 import { computeLeadScore } from '../utils/leadScoring';
 import { cn } from '../utils/cn';
+import type { SentEmail } from '../services/resendService';
 import toast from 'react-hot-toast';
 
 /* ─── Config ─── */
@@ -123,14 +125,22 @@ interface RegionGroup {
   topGrowthKeyword?: { keyword: string; growth: number };
 }
 
+function googleVerifyBadge(status?: Clinic['googleVerifyStatus']) {
+  if (!status) return { label: '—', cls: 'bg-white/5 text-slate-500 border-white/[0.06]' };
+  if (status === 'Verified') return { label: 'Verified', cls: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' };
+  if (status === 'Mismatch') return { label: 'Mismatch', cls: 'bg-amber-500/10 text-amber-400 border-amber-500/20' };
+  return { label: 'Not Found', cls: 'bg-slate-500/10 text-slate-400 border-white/[0.06]' };
+}
+
 /* ─── Main Component ─── */
 
 function CRM() {
-  const { contacts, selectedContact, selectContact, updateContact, updateContactStatus } = useAppStore();
+  const { contacts, sentEmails, selectedContact, selectContact, updateContact, updateContactStatus, removeContact } = useAppStore();
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<ContactStatus | ''>('');
   const [priorityFilter, setPriorityFilter] = useState<Priority | ''>('');
   const [regionFilter, setRegionFilter] = useState('');
+  const [layout, setLayout] = useState<'board' | 'regions'>('board');
   const [isEnriching, setIsEnriching] = useState(false);
   const [drawerTab, setDrawerTab] = useState<'intel' | 'details' | 'activity'>('intel');
   const [showEmailDraft, setShowEmailDraft] = useState(false);
@@ -169,6 +179,67 @@ function CRM() {
     if (regionFilter) { const rk = `${c.clinic.address.city}, ${c.clinic.address.state}`; if (rk !== regionFilter) return false; }
     return true;
   }), [contacts, search, statusFilter, priorityFilter, regionFilter]);
+
+  /* ── Outreach-derived pipeline stages (from sentEmails + inbound replies) ── */
+  const latestEmailByContactId = useMemo(() => {
+    const map = new Map<string, SentEmail>();
+    for (const e of (sentEmails || [])) {
+      if (!e?.contactId) continue;
+      const prev = map.get(e.contactId);
+      const prevTs = prev ? (prev.lastEventAt?.getTime?.() || prev.sentAt?.getTime?.() || 0) : 0;
+      const curTs = (e.lastEventAt?.getTime?.() || e.sentAt?.getTime?.() || 0);
+      if (!prev || curTs >= prevTs) map.set(e.contactId, e);
+    }
+    return map;
+  }, [sentEmails]);
+
+  const pipelineBoard = useMemo(() => {
+    type StageKey = 'needs_enrichment' | 'ready' | 'sent' | 'delivered' | 'replied' | 'qualified' | 'closed';
+
+    const stageOf = (c: CRMContact): StageKey => {
+      const hasReply = Boolean(c.activities?.some(a => a.type === 'email_reply') || c.tags?.includes('replied'));
+      if (hasReply) return 'replied';
+      if (c.status === 'qualified') return 'qualified';
+      if (c.status === 'not_interested' || c.status === 'wrong_number') return 'closed';
+
+      const hasAnyEmail = Boolean(c.decisionMaker?.email || c.clinic.managerEmail || c.clinic.ownerEmail || c.clinic.email);
+      if (!hasAnyEmail) return 'needs_enrichment';
+
+      const latest = latestEmailByContactId.get(c.id);
+      if (!latest) return 'ready';
+      if (latest.lastEvent === 'bounced' || latest.lastEvent === 'complained') return 'closed';
+      if (latest.lastEvent === 'delivered' || latest.lastEvent === 'opened' || latest.lastEvent === 'clicked') return 'delivered';
+      return 'sent';
+    };
+
+    const columns: Record<StageKey, CRMContact[]> = {
+      needs_enrichment: [],
+      ready: [],
+      sent: [],
+      delivered: [],
+      replied: [],
+      qualified: [],
+      closed: [],
+    };
+
+    for (const c of filtered) columns[stageOf(c)].push(c);
+
+    const lastActTs = (c: CRMContact) => {
+      const a = c.activities?.[c.activities.length - 1];
+      return a?.timestamp ? new Date(a.timestamp).getTime() : 0;
+    };
+    (Object.keys(columns) as StageKey[]).forEach(k => {
+      columns[k].sort((a, b) => (b.score - a.score) || (lastActTs(b) - lastActTs(a)));
+    });
+
+    const latestReplyById = new Map<string, Activity>();
+    for (const c of filtered) {
+      const replies = (c.activities || []).filter(a => a.type === 'email_reply');
+      if (replies.length > 0) latestReplyById.set(c.id, replies[replies.length - 1]);
+    }
+
+    return { columns, latestReplyById };
+  }, [filtered, latestEmailByContactId]);
 
   /* ── Region groups — sorted by avg score desc (best regions first) ── */
   const regions = useMemo(() => {
@@ -221,7 +292,12 @@ function CRM() {
     qualified: contacts.filter(c => c.status === 'qualified').length,
     needsAction: contacts.filter(c => c.status === 'new' || c.status === 'ready_to_call').length,
     overdue: contacts.filter(c => c.nextFollowUp && new Date(c.nextFollowUp) < new Date()).length,
-  }), [contacts, allRegionKeys]);
+    delivered: contacts.filter(c => {
+      const e = latestEmailByContactId.get(c.id);
+      return !!e && (e.lastEvent === 'delivered' || e.lastEvent === 'opened' || e.lastEvent === 'clicked');
+    }).length,
+    replied: contacts.filter(c => c.activities?.some(a => a.type === 'email_reply') || c.tags?.includes('replied')).length,
+  }), [contacts, allRegionKeys, latestEmailByContactId]);
 
   /* ── Callbacks ── */
   const addActivity = useCallback((contactId: string, type: Activity['type'], description: string, metadata?: Record<string, any>) => {
@@ -292,6 +368,34 @@ function CRM() {
     } catch (err) { console.error(err); toast.error('Enrichment failed', { id: 'enrich-crm' }); }
     setIsEnriching(false);
   }, [updateContact, selectContact, addActivity]);
+
+  const handleGoogleVerify = useCallback(async (contact: CRMContact) => {
+    if (!googleVerifyService.isConfigured) {
+      toast.error('Google verify is not configured (VITE_GOOGLE_VERIFY_FUNCTION_URL)');
+      return;
+    }
+    toast.loading('Verifying with Google...', { id: `gverify-${contact.id}` });
+    try {
+      const leadEmail = contact.decisionMaker?.email || contact.clinic.managerEmail || contact.clinic.ownerEmail || contact.clinic.email || null;
+      const result = await googleVerifyService.verifyClinic(contact.clinic, leadEmail);
+      const clinicUpdates: Partial<Clinic> = {
+        googleVerifyStatus: result.status,
+        googleVerifyOfficialWebsite: result.officialWebsite || undefined,
+        googleVerifyConfirmedEmail: result.confirmedEmail || undefined,
+        googleVerifyFoundEmails: result.foundEmails || [],
+        googleVerifyCheckedAt: result.checkedAt,
+      };
+      // Keep clinic.website aligned with official site when found.
+      if (result.officialWebsite) clinicUpdates.website = result.officialWebsite;
+
+      updateContact(contact.id, { clinic: { ...contact.clinic, ...clinicUpdates } } as any);
+      const u = useAppStore.getState().contacts.find(c => c.id === contact.id);
+      if (u) selectContact(u);
+      toast.success(`Google verify: ${result.status}`, { id: `gverify-${contact.id}` });
+    } catch (err: any) {
+      toast.error(err?.message || 'Google verify failed', { id: `gverify-${contact.id}` });
+    }
+  }, [updateContact, selectContact]);
 
   useEffect(() => {
     if (selectedContact && !selectedContact.decisionMaker && !isEnriching) handleEnrichContact(selectedContact);
@@ -404,10 +508,34 @@ function CRM() {
                 <Trash2 className="w-3.5 h-3.5" /> Clear All
               </button>
             )}
+            <div className="flex items-center rounded-lg ring-1 ring-white/[0.06] bg-white/5 overflow-hidden">
+              <button
+                onClick={() => setLayout('board')}
+                className={cn(
+                  'px-3 py-1.5 text-xs font-medium transition-colors',
+                  layout === 'board' ? 'bg-novalyte-500/20 text-novalyte-300' : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.06]'
+                )}
+                title="Pipeline board"
+              >
+                Board
+              </button>
+              <button
+                onClick={() => setLayout('regions')}
+                className={cn(
+                  'px-3 py-1.5 text-xs font-medium transition-colors border-l border-white/[0.06]',
+                  layout === 'regions' ? 'bg-novalyte-500/20 text-novalyte-300' : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.06]'
+                )}
+                title="Region grouping"
+              >
+                Regions
+              </button>
+            </div>
             {[
               { label: 'Accounts', value: stats.total, color: 'text-slate-300 bg-white/5 ring-white/[0.06]' },
               { label: 'Regions', value: stats.regions, color: 'text-novalyte-400 bg-novalyte-500/10 ring-novalyte-500/20' },
               { label: 'With Email', value: stats.withEmail, color: 'text-emerald-400 bg-emerald-500/10 ring-emerald-500/20' },
+              { label: 'Delivered', value: (stats as any).delivered || 0, color: 'text-sky-400 bg-sky-500/10 ring-sky-500/20' },
+              { label: 'Replies', value: (stats as any).replied || 0, color: 'text-emerald-400 bg-emerald-500/10 ring-emerald-500/20' },
               { label: 'Qualified', value: stats.qualified, color: 'text-emerald-400 bg-emerald-500/10 ring-emerald-500/20' },
               { label: 'Needs Action', value: stats.needsAction, color: 'text-amber-400 bg-amber-500/10 ring-amber-500/20' },
               { label: 'Overdue', value: stats.overdue, color: 'text-red-400 bg-red-500/10 ring-red-500/20' },
@@ -509,7 +637,159 @@ function CRM() {
               )}
             </div>
           )}
-          {regions.length > 0 ? (
+          {layout === 'board' ? (
+            <div className="p-4 pb-6">
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-[10px] text-slate-500 uppercase tracking-wider">Outreach-Driven Pipeline</span>
+                <span className="text-slate-700">|</span>
+                <span className="text-[10px] text-slate-600">Stages auto-update from delivery events and inbound replies</span>
+              </div>
+
+              {(() => {
+                const cols = [
+                  { key: 'needs_enrichment' as const, label: 'Needs Enrichment', tone: 'text-amber-400 bg-amber-500/10 ring-amber-500/20', hint: 'No usable email on file' },
+                  { key: 'ready' as const, label: 'Ready To Send', tone: 'text-emerald-400 bg-emerald-500/10 ring-emerald-500/20', hint: 'Has email, no send yet' },
+                  { key: 'sent' as const, label: 'Sent', tone: 'text-slate-300 bg-white/5 ring-white/[0.06]', hint: 'Queued / awaiting delivery' },
+                  { key: 'delivered' as const, label: 'Delivered', tone: 'text-sky-400 bg-sky-500/10 ring-sky-500/20', hint: 'Delivered or opened' },
+                  { key: 'replied' as const, label: 'Replied (Accounts)', tone: 'text-emerald-400 bg-emerald-500/10 ring-emerald-500/20', hint: 'Inbound reply received' },
+                  { key: 'qualified' as const, label: 'Qualified', tone: 'text-green-400 bg-green-500/10 ring-green-500/20', hint: 'Manually marked qualified' },
+                  { key: 'closed' as const, label: 'Closed', tone: 'text-red-400 bg-red-500/10 ring-red-500/20', hint: 'Not interested / wrong number / bounced' },
+                ];
+
+                const eventBadge = (e?: SentEmail) => {
+                  if (!e) return { label: '—', cls: 'bg-white/5 text-slate-500 border-white/[0.06]' };
+                  const m: Record<string, { label: string; cls: string }> = {
+                    sent: { label: 'Sent', cls: 'bg-white/5 text-slate-400 border-white/[0.06]' },
+                    delivered: { label: 'Delivered', cls: 'bg-sky-500/10 text-sky-400 border-sky-500/20' },
+                    opened: { label: 'Opened', cls: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' },
+                    clicked: { label: 'Clicked', cls: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' },
+                    bounced: { label: 'Bounced', cls: 'bg-red-500/10 text-red-400 border-red-500/20' },
+                    complained: { label: 'Complaint', cls: 'bg-red-500/10 text-red-400 border-red-500/20' },
+                    delivery_delayed: { label: 'Delayed', cls: 'bg-amber-500/10 text-amber-400 border-amber-500/20' },
+                  };
+                  return m[e.lastEvent] || { label: String(e.lastEvent), cls: 'bg-white/5 text-slate-400 border-white/[0.06]' };
+                };
+
+                const colsData = pipelineBoard.columns;
+
+                return (
+                  <div className="flex gap-3 overflow-x-auto pb-4">
+                    {cols.map(col => (
+                      <div key={col.key} className="w-[320px] shrink-0">
+                        <div className="sticky top-0 z-10 backdrop-blur-sm bg-black/85 border border-white/[0.06] rounded-xl p-3">
+                          <div className="flex items-center gap-2">
+                            <span className={cn('px-2 py-1 rounded-lg ring-1 text-[11px] font-semibold', col.tone)}>
+                              {col.label}
+                            </span>
+                            <span className="ml-auto text-xs tabular-nums font-bold text-slate-200">{colsData[col.key].length}</span>
+                          </div>
+                          <p className="text-[10px] text-slate-600 mt-1">{col.hint}</p>
+                        </div>
+
+                        <div className="mt-2 space-y-2">
+                          {colsData[col.key].map(contact => {
+                            const dm = contact.decisionMaker;
+                            const latest = latestEmailByContactId.get(contact.id);
+                            const badge = eventBadge(latest);
+                            const reply = pipelineBoard.latestReplyById.get(contact.id);
+                            const s = (v: unknown, max = 220) => String(v || '').slice(0, max);
+                            const replySnippet = s((reply?.metadata as any)?.snippet || '', 220) || s(reply?.description || '', 220);
+                            const hasEmail = Boolean(dm?.email || contact.clinic.managerEmail || contact.clinic.ownerEmail || contact.clinic.email);
+                            return (
+                              <div
+                                key={contact.id}
+                                onClick={() => { selectContact(contact); setDrawerTab('intel'); }}
+                                className={cn(
+                                  'group cursor-pointer rounded-xl border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04] transition-colors p-3'
+                                )}
+                              >
+                                <div className="flex items-start gap-2.5">
+                                  <div className={cn(
+                                    'w-9 h-9 rounded-xl flex items-center justify-center text-xs font-bold shrink-0',
+                                    contact.priority === 'critical' ? 'bg-red-500/15 text-red-400' :
+                                    contact.priority === 'high' ? 'bg-orange-500/15 text-orange-400' :
+                                    contact.priority === 'medium' ? 'bg-amber-500/15 text-amber-400' :
+                                    'bg-white/5 text-slate-500'
+                                  )}>
+                                    {contact.score}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-start gap-2">
+                                      <div className="min-w-0">
+                                        <p className="text-sm font-semibold text-slate-200 truncate group-hover:text-novalyte-400 transition-colors">
+                                          {contact.clinic.name}
+                                        </p>
+                                        <p className="text-[10px] text-slate-600 mt-0.5 truncate">
+                                          {contact.clinic.address.city}, {contact.clinic.address.state}
+                                          {contact.clinic.rating ? ` · ${Number(contact.clinic.rating).toFixed(1)}★` : ''}
+                                        </p>
+                                      </div>
+                                      <button
+                                        onClick={e => {
+                                          e.stopPropagation();
+                                          if (confirm(`Remove ${contact.clinic.name} from pipeline? This deletes the CRM contact.`)) removeContact(contact.id);
+                                        }}
+                                        className="ml-auto p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-500/10 opacity-0 group-hover:opacity-100 transition-opacity"
+                                        title="Remove from pipeline"
+                                      >
+                                        <Trash2 className="w-4 h-4" />
+                                      </button>
+                                    </div>
+
+                                    <div className="flex items-center gap-2 mt-2 flex-wrap">
+                                      <span className={cn('text-[10px] px-2 py-0.5 rounded border font-semibold', badge.cls)}>{badge.label}</span>
+                                      {latest?.provider && (
+                                        <span className="text-[10px] px-2 py-0.5 rounded bg-white/5 border border-white/[0.06] text-slate-400">
+                                          {latest.provider.toUpperCase()}
+                                        </span>
+                                      )}
+                                      {contact.nextFollowUp && (
+                                        <span className={cn('text-[10px] px-2 py-0.5 rounded bg-white/5 border border-white/[0.06]',
+                                          new Date(contact.nextFollowUp) < new Date() ? 'text-red-400 border-red-500/20 bg-red-500/5' : 'text-slate-400'
+                                        )}>
+                                          Follow-up {new Date(contact.nextFollowUp).toLocaleDateString()}
+                                        </span>
+                                      )}
+                                      {!hasEmail && (
+                                        <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-400">
+                                          No email
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    {col.key === 'replied' && replySnippet && (
+                                      <div className="mt-2 p-2 rounded-lg bg-emerald-500/5 border border-emerald-500/10">
+                                        <p className="text-[10px] text-emerald-300 font-medium">Latest Reply</p>
+                                        <p className="text-[10px] text-slate-400 mt-0.5 line-clamp-3">{replySnippet}</p>
+                                      </div>
+                                    )}
+
+                                    {hasEmail && (
+                                      <div className="flex items-center gap-2 mt-2">
+                                        <span className="text-[10px] text-slate-500 flex items-center gap-1 min-w-0">
+                                          <Mail className="w-3 h-3 shrink-0" />
+                                          <span className="truncate">{dm?.email || contact.clinic.managerEmail || contact.clinic.ownerEmail || contact.clinic.email}</span>
+                                        </span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                          {colsData[col.key].length === 0 && (
+                            <div className="rounded-xl border border-white/[0.06] bg-white/[0.01] p-3 text-[10px] text-slate-600">
+                              No accounts in this stage.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+          ) : regions.length > 0 ? (
             <div className="pb-4">
               {regions.map(region => {
                 const isCollapsed = collapsedRegions[region.key];
@@ -830,6 +1110,44 @@ function CRM() {
                       <div className="flex items-center justify-between"><span className="text-slate-500">Phone</span>{selectedContact.clinic.phone ? <a href={`tel:${selectedContact.clinic.phone}`} className="font-medium text-novalyte-400 hover:underline">{selectedContact.clinic.phone}</a> : <span className="text-slate-600">—</span>}</div>
                       <div className="flex items-center justify-between"><span className="text-slate-500">Email</span>{selectedContact.clinic.email ? <span className="font-medium text-slate-300">{selectedContact.clinic.email}</span> : <span className="text-slate-600">—</span>}</div>
                       <div className="flex items-center justify-between"><span className="text-slate-500">Website</span>{selectedContact.clinic.website ? <a href={selectedContact.clinic.website.startsWith('http') ? selectedContact.clinic.website : `https://${selectedContact.clinic.website}`} target="_blank" rel="noopener noreferrer" className="font-medium text-novalyte-400 hover:underline flex items-center gap-1 truncate max-w-[200px]"><ExternalLink className="w-3 h-3 shrink-0" />{selectedContact.clinic.website.replace(/^https?:\/\//, '')}</a> : <span className="text-slate-600">—</span>}</div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-500">Google Verify</span>
+                        <div className="flex items-center gap-2">
+                          <span className={cn('text-[10px] px-2 py-0.5 rounded border font-semibold', googleVerifyBadge(selectedContact.clinic.googleVerifyStatus).cls)}>
+                            {googleVerifyBadge(selectedContact.clinic.googleVerifyStatus).label}
+                          </span>
+                          <button
+                            onClick={() => handleGoogleVerify(selectedContact)}
+                            className="inline-flex items-center gap-1 text-[10px] text-novalyte-400 hover:underline"
+                            title={googleVerifyService.isConfigured ? 'Verify with Google' : 'Set VITE_GOOGLE_VERIFY_FUNCTION_URL'}
+                          >
+                            <CheckCircle2 className="w-3 h-3" />
+                            Verify with Google
+                          </button>
+                        </div>
+                      </div>
+                      {selectedContact.clinic.googleVerifyConfirmedEmail && (
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-500">Confirmed Email</span>
+                          <a href={`mailto:${selectedContact.clinic.googleVerifyConfirmedEmail}`} className="font-medium text-novalyte-400 hover:underline">
+                            {selectedContact.clinic.googleVerifyConfirmedEmail}
+                          </a>
+                        </div>
+                      )}
+                      {selectedContact.clinic.googleVerifyOfficialWebsite && (
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-500">Official Website</span>
+                          <a
+                            href={selectedContact.clinic.googleVerifyOfficialWebsite}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="font-medium text-novalyte-400 hover:underline flex items-center gap-1 truncate max-w-[200px]"
+                          >
+                            <ExternalLink className="w-3 h-3 shrink-0" />
+                            {selectedContact.clinic.googleVerifyOfficialWebsite.replace(/^https?:\/\//, '')}
+                          </a>
+                        </div>
+                      )}
                       <div className="flex items-center justify-between"><span className="text-slate-500">Rating</span>{selectedContact.clinic.rating ? <span className="font-medium text-slate-300 flex items-center gap-1"><Star className="w-3 h-3 text-amber-400 fill-amber-400" />{Number(selectedContact.clinic.rating).toFixed(1)} ({selectedContact.clinic.reviewCount || 0} reviews)</span> : <span className="text-slate-600">—</span>}</div>
                       <div className="flex items-start justify-between"><span className="text-slate-500">Address</span><span className="font-medium text-slate-300 text-right">{selectedContact.clinic.address.street}<br />{selectedContact.clinic.address.city}, {selectedContact.clinic.address.state} {selectedContact.clinic.address.zip}</span></div>
                     </div>
@@ -1023,6 +1341,7 @@ function CRM() {
                             call_made: { icon: PhoneCall, color: 'text-emerald-400', bg: 'bg-emerald-500/15' },
                             call_scheduled: { icon: Calendar, color: 'text-violet-400', bg: 'bg-violet-500/15' },
                             email_sent: { icon: Send, color: 'text-novalyte-400', bg: 'bg-novalyte-500/15' },
+                            email_reply: { icon: MessageSquare, color: 'text-emerald-400', bg: 'bg-emerald-500/15' },
                             note_added: { icon: FileText, color: 'text-slate-400', bg: 'bg-white/5' },
                             status_change: { icon: ArrowUpDown, color: 'text-amber-400', bg: 'bg-amber-500/15' },
                             follow_up_set: { icon: Calendar, color: 'text-blue-400', bg: 'bg-blue-500/15' },

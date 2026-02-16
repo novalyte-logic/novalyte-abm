@@ -1,0 +1,12 @@
+{
+  "name": "google-verify",
+  "version": "1.0.0",
+  "description": "Verify clinics and emails using Google Cloud (Places + live web scrape + SMTP/MX checks)",
+  "main": "index.js",
+  "dependencies": {
+    "@google-cloud/functions-framework": "^3.3.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

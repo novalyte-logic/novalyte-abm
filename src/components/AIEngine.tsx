@@ -8,6 +8,8 @@ import {
 } from 'lucide-react';
 import { cn } from '../utils/cn';
 import { useAppStore } from '../stores/appStore';
+import { supabase } from '../lib/supabase';
+import { googleVerifyService } from '../services/googleVerifyService';
 import toast from 'react-hot-toast';
 
 type PipelineStep = 'idle' | 'syncing' | 'enriching' | 'verifying' | 'training' | 'scoring' | 'complete' | 'error';
@@ -75,6 +77,21 @@ const EMPTY_LIVE_NUMBERS: LiveNumbers = {
   invalidDmEmails: 0,
   missingDmEmails: 0,
 };
+
+const GENERIC_EMAIL_PREFIXES = ['info', 'contact', 'office', 'admin', 'frontdesk', 'hello', 'support', 'help', 'reception', 'appointments', 'billing', 'marketing', 'sales', 'hr', 'noreply', 'no-reply'];
+function isGenericEmail(email?: string | null): boolean {
+  const clean = String(email || '').trim();
+  if (!clean || !clean.includes('@')) return false;
+  const prefix = clean.split('@')[0].toLowerCase();
+  return GENERIC_EMAIL_PREFIXES.includes(prefix);
+}
+
+function splitFullName(fullName?: string | null): { firstName: string; lastName: string } {
+  const clean = String(fullName || '').trim();
+  if (!clean) return { firstName: 'Team', lastName: '' };
+  const [firstName, ...rest] = clean.split(/\s+/);
+  return { firstName: firstName || 'Team', lastName: rest.join(' ') || '' };
+}
 
 function getAdSignalCount(signals?: Partial<AdSignals>): number {
   if (!signals) return 0;
@@ -460,6 +477,8 @@ export default function AIEngine() {
   const [sequenceProgress] = useState({ sent: 0, total: 0, model: '' });
   const [expandedNodes, setExpandedNodes] = useState<Record<string, boolean>>(saved.current?.expandedNodes || {});
   const [selectedClinics, setSelectedClinics] = useState<Set<string>>(new Set());
+  const [googleVerifying, setGoogleVerifying] = useState(false);
+  const [googleVerifyProgress, setGoogleVerifyProgress] = useState({ done: 0, total: 0 });
   const [filterTier, setFilterTier] = useState<'all' | 'hot' | 'warm' | 'cold'>('all');
   const [filterEmail, setFilterEmail] = useState<'all' | 'with_email' | 'no_email'>('all');
   const [prospectView, setProspectView] = useState<ProspectViewMode>('priority');
@@ -469,6 +488,8 @@ export default function AIEngine() {
   const [clearArmed, setClearArmed] = useState(false);
   const [holdStartProgress, setHoldStartProgress] = useState(0);
   const [isHoldingStart, setIsHoldingStart] = useState(false);
+  const [dmEnrichmentRunning, setDmEnrichmentRunning] = useState(false);
+  const [loadingVerifiedDmProspects, setLoadingVerifiedDmProspects] = useState(false);
   const holdStartTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const holdStartAtRef = useRef<number | null>(null);
   const callFirstAlertedRef = useRef<Set<string>>(new Set());
@@ -612,6 +633,224 @@ export default function AIEngine() {
   }, [topProspects, liveNumbers, pipelineHistory, lastRun, expandedNodes]);
 
   useEffect(() => { persistState(); }, [persistState]);
+
+  const refreshDmCoverageFromSupabase = useCallback(async () => {
+    if (!supabase) return;
+
+    const [{ count: clinicsCount, error: clinicsErr }, { data: dmRows, error: dmErr }] = await Promise.all([
+      supabase.from('clinics').select('id', { count: 'exact', head: true }),
+      supabase
+        .from('decision_makers')
+        .select('clinic_id,email_verification_status')
+        .not('clinic_id', 'is', null)
+        .not('email_verification_status', 'is', null)
+        .limit(6000),
+    ]);
+
+    if (clinicsErr) throw new Error(clinicsErr.message);
+    if (dmErr) throw new Error(dmErr.message);
+
+    const verified = new Set<string>();
+    const risky = new Set<string>();
+    const invalid = new Set<string>();
+
+    for (const row of dmRows || []) {
+      const clinicId = String(row.clinic_id || '').trim();
+      if (!clinicId) continue;
+      const verification = String(row.email_verification_status || '').toLowerCase();
+      if (verification === 'valid') verified.add(clinicId);
+      else if (verification === 'risky' || verification === 'catch-all' || verification === 'catch_all' || verification === 'accept_all') risky.add(clinicId);
+      else if (verification === 'invalid') invalid.add(clinicId);
+    }
+
+    const uniqueWithEmail = new Set([...verified, ...risky, ...invalid]).size;
+    const clinicsInScope = Number(clinicsCount || 0);
+    const missing = Math.max(0, clinicsInScope - verified.size);
+
+    setLiveNumbers(prev => ({
+      ...prev,
+      clinics: clinicsInScope || prev.clinics,
+      enriched: Math.max(prev.enriched, uniqueWithEmail),
+      verifiedDmEmails: verified.size,
+      riskyDmEmails: risky.size,
+      invalidDmEmails: invalid.size,
+      missingDmEmails: missing,
+    }));
+  }, []);
+
+  useEffect(() => {
+    refreshDmCoverageFromSupabase().catch(() => {});
+  }, [refreshDmCoverageFromSupabase]);
+
+  const loadVerifiedDmProspectsFromSupabase = async () => {
+    if (loadingVerifiedDmProspects) return;
+    if (!supabase) {
+      toast.error('Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.');
+      return;
+    }
+    if (isRunning) {
+      toast.error('Stop the active engine run before loading verified DMs.');
+      return;
+    }
+
+    setLoadingVerifiedDmProspects(true);
+    const loadingToast = toast.loading('Loading verified DM emails from Supabase...');
+
+    try {
+      const { data: dmRows, error: dmErr } = await supabase
+        .from('decision_makers')
+        .select('clinic_id,first_name,last_name,title,role,email,confidence,source,email_verified,email_verification_status,enriched_at')
+        .eq('email_verification_status', 'valid')
+        .not('clinic_id', 'is', null)
+        .not('email', 'is', null)
+        .limit(6000);
+
+      if (dmErr) throw new Error(dmErr.message);
+
+      if (!dmRows?.length) {
+        await refreshDmCoverageFromSupabase().catch(() => {});
+        toast('No verified decision-maker emails found in Supabase yet.', { id: loadingToast, icon: '⚠️', duration: 6000 });
+        return;
+      }
+
+      const pickBetterDm = (candidate: any, current: any) => {
+        const candEmail = String(candidate?.email || '').trim();
+        const currEmail = String(current?.email || '').trim();
+        const candGeneric = isGenericEmail(candEmail);
+        const currGeneric = isGenericEmail(currEmail);
+        if (candGeneric !== currGeneric) return !candGeneric; // Prefer non-generic.
+        const candConf = Number(candidate?.confidence || 0);
+        const currConf = Number(current?.confidence || 0);
+        if (candConf !== currConf) return candConf > currConf;
+        const candAt = candidate?.enriched_at ? new Date(candidate.enriched_at).getTime() : 0;
+        const currAt = current?.enriched_at ? new Date(current.enriched_at).getTime() : 0;
+        if (candAt !== currAt) return candAt > currAt;
+        return candEmail.length > currEmail.length;
+      };
+
+      const bestDmByClinic = new Map<string, any>();
+      for (const row of dmRows) {
+        const clinicId = String((row as any)?.clinic_id || '').trim();
+        if (!clinicId) continue;
+        const current = bestDmByClinic.get(clinicId);
+        if (!current) {
+          bestDmByClinic.set(clinicId, row);
+          continue;
+        }
+        if (pickBetterDm(row, current)) bestDmByClinic.set(clinicId, row);
+      }
+
+      const clinicIds = Array.from(bestDmByClinic.keys());
+      const clinicsById = new Map<string, any>();
+      const chunkSize = 180;
+      for (let i = 0; i < clinicIds.length; i += chunkSize) {
+        const chunk = clinicIds.slice(i, i + chunkSize);
+        const { data: clinicRows, error: clinicsErr } = await supabase
+          .from('clinics')
+          .select('id,name,city,state,phone,website,rating,review_count,services')
+          .in('id', chunk);
+        if (clinicsErr) throw new Error(clinicsErr.message);
+        for (const c of clinicRows || []) {
+          const id = String((c as any)?.id || '').trim();
+          if (id) clinicsById.set(id, c);
+        }
+      }
+
+      const toVerificationStatus = (raw: any): 'valid' | 'invalid' | 'risky' | 'unknown' | undefined => {
+        const v = String(raw || '').toLowerCase().trim();
+        if (v === 'valid' || v === 'invalid' || v === 'risky' || v === 'unknown') return v;
+        if (v === 'catch-all' || v === 'catch_all' || v === 'accept_all') return 'risky';
+        return undefined;
+      };
+
+      const prospects: any[] = [];
+      let missingClinics = 0;
+      for (const clinicId of clinicIds) {
+        const clinic = clinicsById.get(clinicId);
+        const dm = bestDmByClinic.get(clinicId);
+        if (!clinic) { missingClinics += 1; continue; }
+
+        const dmEmail = String(dm?.email || '').trim();
+        if (!dmEmail) continue;
+        const dmName = [String(dm?.first_name || '').trim(), String(dm?.last_name || '').trim()].filter(Boolean).join(' ').trim();
+        const verificationStatus = toVerificationStatus(dm?.email_verification_status) || 'valid';
+        const emailVerified = Boolean(dm?.email_verified) || verificationStatus === 'valid';
+
+        // Default tier/score: this path is about outreach enablement, not ML ranking.
+        const propensityScore = 0.45;
+        const propensityTier: 'hot' | 'warm' | 'cold' = propensityScore >= 0.7 ? 'hot' : propensityScore >= 0.4 ? 'warm' : 'cold';
+
+        const baseProspect: any = {
+          clinic_id: String(clinic.id),
+          name: clinic.name,
+          city: clinic.city,
+          state: clinic.state,
+          phone: clinic.phone || '',
+          website: clinic.website || '',
+          rating: clinic.rating ?? undefined,
+          review_count: clinic.review_count ?? 0,
+          services: clinic.services || [],
+          // Keep the field stable so existing UI renders without NaNs.
+          affluence_score: 0,
+          propensity_score: propensityScore,
+          propensity_tier: propensityTier,
+          dm_name: dmName || undefined,
+          dm_email: dmEmail,
+          // Keep `email` for legacy exports; `dm_email` is what intent scoring boosts.
+          email: dmEmail,
+          dm_title: dm?.title || undefined,
+          dm_role: dm?.role || undefined,
+          dm_confidence: Number(dm?.confidence || 0),
+          dm_source: dm?.source || undefined,
+          email_verified: emailVerified,
+          email_verification_status: verificationStatus,
+          ad_signals: { ...EMPTY_AD_SIGNALS },
+          ad_active: false,
+        };
+
+        const intentScore = computeIntentScore(baseProspect);
+        prospects.push({
+          ...baseProspect,
+          intent_score: intentScore,
+          recommended_action: getRecommendedAction({ ...baseProspect, intent_score: intentScore }),
+          _source: 'supabase_verified_dm',
+        });
+      }
+
+      if (prospects.length === 0) {
+        await refreshDmCoverageFromSupabase().catch(() => {});
+        toast('Verified DMs exist in Supabase, but none could be mapped to clinics.', { id: loadingToast, icon: '⚠️', duration: 7000 });
+        return;
+      }
+
+      const existingIds = new Set(topProspects.map(p => String(p?.clinic_id || '').trim()).filter(Boolean));
+      const existingKeys = new Set(topProspects.map(p => `${String(p?.name || '').toLowerCase().trim()}|${String(p?.city || '').toLowerCase().trim()}`));
+      const newOnes = prospects.filter(p => {
+        const id = String(p?.clinic_id || '').trim();
+        if (id && existingIds.has(id)) return false;
+        const key = `${String(p?.name || '').toLowerCase().trim()}|${String(p?.city || '').toLowerCase().trim()}`;
+        if (existingKeys.has(key)) return false;
+        return true;
+      });
+
+      const merged = rankProspectsByIntent([...topProspects, ...newOnes]);
+      setTopProspects(merged);
+      setSelectedClinics(new Set());
+
+      await refreshDmCoverageFromSupabase().catch(() => {});
+
+      const loaded = newOnes.length;
+      const alreadyPresent = prospects.length - loaded;
+      toast.success(`Loaded ${loaded} verified DM prospects from Supabase${alreadyPresent > 0 ? ` (${alreadyPresent} already in AI Engine)` : ''}.`, { id: loadingToast, duration: 5000 });
+      if (missingClinics > 0) {
+        toast(`${missingClinics} verified DM rows had no matching clinic record (skipped).`, { icon: '⚠️', duration: 6000 });
+      }
+    } catch (err: any) {
+      toast.error(`Load failed: ${err?.message || 'Unknown error'}`, { id: loadingToast });
+    } finally {
+      setLoadingVerifiedDmProspects(false);
+    }
+  };
 
   useEffect(() => {
     if (!clearArmed) return;
@@ -1057,21 +1296,48 @@ export default function AIEngine() {
         m.state.toLowerCase() === (p.state || '').toLowerCase()
       ) || markets[0];
 
+      const dmEmail = getProspectEmail(p);
+      const dmName = String(p.dm_name || '').trim();
+      const { firstName: dmFirstName, lastName: dmLastName } = splitFullName(dmName);
+      const rawStatus = String(p.email_verification_status || p.emailVerificationStatus || '').toLowerCase().trim();
+      const emailVerificationStatus = (rawStatus === 'valid' || rawStatus === 'invalid' || rawStatus === 'risky' || rawStatus === 'unknown')
+        ? (rawStatus as any)
+        : undefined;
+      const emailVerified = Boolean(p.email_verified || p.emailVerified) || emailVerificationStatus === 'valid';
+      const rawRole = String(p.dm_role || '').toLowerCase().trim();
+      const role = (rawRole === 'owner' || rawRole === 'medical_director' || rawRole === 'clinic_manager' || rawRole === 'practice_administrator' || rawRole === 'marketing_director' || rawRole === 'operations_manager')
+        ? rawRole
+        : 'clinic_manager';
+      const rawSource = String(p.dm_source || p.source || 'ai-engine').toLowerCase().trim();
+      const source = (rawSource === 'apollo' || rawSource === 'clearbit' || rawSource === 'npi' || rawSource === 'linkedin' || rawSource === 'manual' || rawSource === 'website_scrape' || rawSource === 'ai-engine')
+        ? rawSource
+        : 'ai-engine';
+
       newContacts.push({
         id: `contact-${p.clinic_id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         clinic: {
           id: p.clinic_id, name: p.name, type: 'mens_health_clinic' as const,
           address: { street: '', city: p.city || '', state: p.state || '', zip: '', country: 'USA' },
-          phone: '', email: getProspectEmail(p) || undefined,
-          managerEmail: getProspectEmail(p) || undefined,
+          phone: p.phone || '', email: dmEmail || undefined,
+          website: p.website || undefined,
+          managerName: dmName || undefined,
+          managerEmail: dmEmail || undefined,
           services: p.services || [], marketZone: market,
+          rating: p.rating || undefined,
+          reviewCount: p.review_count || 0,
           discoveredAt: new Date(), lastUpdated: new Date(),
         },
-        decisionMaker: getProspectEmail(p) ? {
+        decisionMaker: dmEmail ? {
           id: `dm-${p.clinic_id}`, clinicId: p.clinic_id,
-          firstName: (p.name || '').split(' ')[0] || 'Team',
-          lastName: '', email: getProspectEmail(p), title: 'Decision Maker',
-          role: 'clinic_manager' as const, confidence: 60, source: 'ai-engine' as const,
+          firstName: dmFirstName || 'Team',
+          lastName: dmLastName || '',
+          email: dmEmail,
+          title: p.dm_title || 'Decision Maker',
+          role: role as any,
+          confidence: Number(p.dm_confidence || 60),
+          source: source as any,
+          emailVerified,
+          emailVerificationStatus,
         } : undefined,
         status: 'ready_to_call',
         priority: p.propensity_tier === 'hot' ? 'high' : 'medium',
@@ -1093,7 +1359,102 @@ export default function AIEngine() {
     if (newContacts.length > 0) addContacts(newContacts);
 
     toast.success(`${targets.length} clinics staged in Intro Email phase → Go to Email Outreach to personalize with Vertex AI & send`);
+    // Jump user into Email Outreach right away.
+    useAppStore.getState().setCurrentView('email');
     setSelectedClinics(new Set());
+  };
+
+  // ═══ BULK GOOGLE VERIFY (IMPROVE OFFICIAL WEBSITE + CONFIRMED EMAIL) ═══
+  const verifyWithGoogleBeforeOutreach = async () => {
+    if (googleVerifying) return;
+    if (!googleVerifyService.isConfigured) {
+      toast.error('Google verify is not configured (VITE_GOOGLE_VERIFY_FUNCTION_URL)');
+      return;
+    }
+
+    const pool = selectedClinics.size > 0
+      ? topProspects.filter(p => selectedClinics.has(p.clinic_id))
+      : filteredProspects;
+
+    if (pool.length === 0) { toast.error('No prospects to verify'); return; }
+
+    // Keep this sane; the function does live fetch + scrape.
+    const CAP = 200;
+    if (pool.length > CAP) {
+      const ok = confirm(`Google verify is heavy. Verify first ${CAP} of ${pool.length}?`);
+      if (!ok) return;
+    }
+    const targets = pool.slice(0, CAP);
+
+    setGoogleVerifying(true);
+    setGoogleVerifyProgress({ done: 0, total: targets.length });
+    toast.loading(`Google verifying ${targets.length} clinics...`, { id: 'ai-gverify' });
+
+    try {
+      for (let i = 0; i < targets.length; i++) {
+        const p = targets[i];
+        const market = useAppStore.getState().markets.find(m =>
+          m.city.toLowerCase() === String(p.city || '').toLowerCase() &&
+          m.state.toLowerCase() === String(p.state || '').toLowerCase()
+        ) || useAppStore.getState().markets[0];
+
+        const clinic = {
+          id: String(p.clinic_id),
+          name: String(p.name || ''),
+          type: 'mens_health_clinic',
+          address: { street: '', city: String(p.city || ''), state: String(p.state || ''), zip: '', country: 'USA' },
+          phone: String(p.phone || ''),
+          email: String(p.email || p.dm_email || '') || undefined,
+          website: String(p.website || '') || undefined,
+          googlePlaceId: undefined,
+          yelpId: undefined,
+          rating: p.rating ?? undefined,
+          reviewCount: p.review_count ?? undefined,
+          managerName: p.dm_name || undefined,
+          managerEmail: p.dm_email || p.email || undefined,
+          ownerName: undefined,
+          ownerEmail: undefined,
+          services: Array.isArray(p.services) ? p.services : [],
+          marketZone: market,
+          discoveredAt: new Date(),
+          lastUpdated: new Date(),
+        } as any;
+
+        const leadEmail = String(p.email || p.dm_email || '').trim() || null;
+
+        try {
+          const result = await googleVerifyService.verifyClinic(clinic, leadEmail);
+          const confirmed = String(result.confirmedEmail || '').trim();
+          const official = String(result.officialWebsite || '').trim();
+
+          // Update AI Engine prospect row so "Push to Email Outreach" uses improved data.
+          setTopProspects(prev => prev.map(x => {
+            if (String(x.clinic_id) !== String(p.clinic_id)) return x;
+            return {
+              ...x,
+              website: official || x.website,
+              dm_email: confirmed || x.dm_email,
+              email: confirmed || x.email,
+              google_verify_status: result.status,
+              google_verify_official_website: official || null,
+              google_verify_confirmed_email: confirmed || null,
+              google_verify_checked_at: result.checkedAt,
+            };
+          }));
+        } catch {
+          // ignore per-item failure
+        }
+
+        setGoogleVerifyProgress({ done: i + 1, total: targets.length });
+        await new Promise(r => setTimeout(r, 250));
+      }
+
+      toast.success('Google verify complete', { id: 'ai-gverify' });
+    } catch (err: any) {
+      toast.error(`Google verify failed: ${err?.message || 'Unknown error'}`, { id: 'ai-gverify' });
+    } finally {
+      setGoogleVerifying(false);
+    }
   };
 
   // ═══ PUSH SELECTED TO CRM ═══
@@ -1135,16 +1496,35 @@ export default function AIEngine() {
         lastUpdated: new Date(),
       };
 
-      const dm = p.dm_name ? {
+      const dmEmail = getProspectEmail(p);
+      const dmName = String(p.dm_name || '').trim();
+      const { firstName: dmFirstName, lastName: dmLastName } = splitFullName(dmName);
+      const rawStatus = String(p.email_verification_status || p.emailVerificationStatus || '').toLowerCase().trim();
+      const emailVerificationStatus = (rawStatus === 'valid' || rawStatus === 'invalid' || rawStatus === 'risky' || rawStatus === 'unknown')
+        ? (rawStatus as any)
+        : undefined;
+      const emailVerified = Boolean(p.email_verified || p.emailVerified) || emailVerificationStatus === 'valid';
+      const rawRole = String(p.dm_role || '').toLowerCase().trim();
+      const role = (rawRole === 'owner' || rawRole === 'medical_director' || rawRole === 'clinic_manager' || rawRole === 'practice_administrator' || rawRole === 'marketing_director' || rawRole === 'operations_manager')
+        ? rawRole
+        : 'clinic_manager';
+      const rawSource = String(p.dm_source || p.source || 'ai-engine').toLowerCase().trim();
+      const source = (rawSource === 'apollo' || rawSource === 'clearbit' || rawSource === 'npi' || rawSource === 'linkedin' || rawSource === 'manual' || rawSource === 'website_scrape' || rawSource === 'ai-engine')
+        ? rawSource
+        : 'ai-engine';
+
+      const dm = dmEmail ? {
         id: `dm-${p.clinic_id}`,
         clinicId: p.clinic_id,
-        firstName: (p.dm_name || '').split(' ')[0] || '',
-        lastName: (p.dm_name || '').split(' ').slice(1).join(' ') || '',
-        email: getProspectEmail(p) || '',
-        title: 'Decision Maker',
-        role: 'clinic_manager' as const,
-        confidence: 70,
-        source: 'ai-engine' as const,
+        firstName: dmFirstName || 'Team',
+        lastName: dmLastName || '',
+        email: dmEmail,
+        title: p.dm_title || 'Decision Maker',
+        role: role as any,
+        confidence: Number(p.dm_confidence || 70),
+        source: source as any,
+        emailVerified,
+        emailVerificationStatus,
       } : undefined;
 
       newContacts.push({
@@ -1319,6 +1699,98 @@ export default function AIEngine() {
     setClearArmed(false);
   };
 
+  const runDmEnrichmentBatch = async () => {
+    if (dmEnrichmentRunning) return;
+    if (!supabase) {
+      toast.error('Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.');
+      return;
+    }
+    if (isRunning) {
+      toast.error('Stop the active engine run before launching standalone DM enrichment.');
+      return;
+    }
+
+    setDmEnrichmentRunning(true);
+    const loadingToast = toast.loading('Running DM enrichment batch...');
+
+    try {
+      const metaEnv: any =
+        (typeof import.meta !== 'undefined' && (import.meta as any).env)
+          ? (import.meta as any).env
+          : {};
+      const apolloApiKeys = String(metaEnv.VITE_APOLLO_API_KEYS || metaEnv.VITE_APOLLO_API_KEY || '').trim();
+      const revenueBaseKey = String(metaEnv.VITE_REVENUEBASE_API_KEY || '').trim();
+      const leadMagicKey = String(metaEnv.VITE_LEADMAGIC_API_KEY || '').trim();
+
+      if (!apolloApiKeys && !leadMagicKey) {
+        throw new Error('Missing enrichment provider keys: set VITE_APOLLO_API_KEYS (or VITE_APOLLO_API_KEY) or VITE_LEADMAGIC_API_KEY.');
+      }
+
+      const { data, error } = await supabase.functions.invoke('dm-enrichment-batch', {
+        body: {
+          limit: 60,
+          verifyLimit: 50,
+          verifyUnknown: false,
+          apolloApiKeys,
+          revenueBaseKey,
+          leadMagicKey,
+        },
+      });
+
+      if (error) {
+        let detail = error.message || 'Edge function request failed';
+        const context = (error as any)?.context;
+        if (context instanceof Response) {
+          try {
+            const payload = await context.clone().json();
+            if (payload?.error) detail = String(payload.error);
+            else if (payload?.message) detail = String(payload.message);
+          } catch {
+            try {
+              const text = await context.clone().text();
+              if (text) detail = text;
+            } catch {
+              // Keep default detail.
+            }
+          }
+        }
+        throw new Error(detail);
+      }
+      if (data?.error) throw new Error(String(data.error));
+
+      await refreshDmCoverageFromSupabase().catch((err: any) => {
+        console.warn('DM coverage refresh failed:', err?.message || err);
+      });
+
+      const processed = Number(data?.processedClinics || 0);
+      const emailsFound = Number(data?.emailsFound || 0);
+      const validFound = Number(data?.validFound || 0);
+      const verifiedUnknown = Number(data?.verifiedUnknownEmails || 0);
+      const exhaustedKeys = Number(data?.exhaustedApolloKeys || 0);
+      const leadMagicHits = Number(data?.leadMagicHits || 0);
+      const apolloRestricted = Number(data?.apolloRestricted || 0);
+      const leadMagicInsufficientCredits = Number(data?.leadMagicInsufficientCredits || 0);
+
+      const headline = `DM enrichment complete: processed ${processed} clinics, found ${emailsFound} emails (${leadMagicHits} via LeadMagic), ${validFound} valid, ${verifiedUnknown} unknowns verified.`;
+      if (emailsFound === 0) toast(headline, { id: loadingToast, duration: 7000, icon: '⚠️' });
+      else toast.success(headline, { id: loadingToast, duration: 6000 });
+
+      if (apolloRestricted > 0) {
+        toast.error('Apollo people search is blocked on the current Apollo plan (API_INACCESSIBLE). Upgrade Apollo or switch providers.');
+      } else if (exhaustedKeys > 0) {
+        toast.error(`Apollo keys exhausted/limited: ${exhaustedKeys}. Add more keys or reset credits before next batch.`);
+      }
+
+      if (leadMagicInsufficientCredits > 0) {
+        toast.error('LeadMagic has insufficient credits (0). Add credits to enable LeadMagic enrichment.');
+      }
+    } catch (err: any) {
+      toast.error(`DM enrichment failed: ${err?.message || 'Unknown error'}`, { id: loadingToast });
+    } finally {
+      setDmEnrichmentRunning(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-black p-4 md:p-6 space-y-5">
       <style>{`
@@ -1413,8 +1885,40 @@ export default function AIEngine() {
                 >
                   <span className="flex items-center gap-2"><Square className="h-4 w-4" /> Stop Engine</span>
                 </button>
+                <button
+                  type="button"
+                  onClick={runDmEnrichmentBatch}
+                  disabled={isRunning || dmEnrichmentRunning || !supabase}
+                  className={cn(
+                    'rounded-lg border px-4 py-2.5 text-sm font-semibold transition-all',
+                    isRunning || dmEnrichmentRunning || !supabase
+                      ? 'cursor-not-allowed border-white/10 bg-white/[0.04] text-slate-500'
+                      : 'border-[#06B6D4]/45 bg-[#06B6D4]/12 text-[#67E8F9] hover:bg-[#06B6D4]/22'
+                  )}
+                >
+                  <span className="flex items-center gap-2">
+                    {dmEnrichmentRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
+                    {dmEnrichmentRunning ? 'Running DM Enrichment...' : 'Run DM Enrichment'}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={loadVerifiedDmProspectsFromSupabase}
+                  disabled={isRunning || dmEnrichmentRunning || loadingVerifiedDmProspects || !supabase}
+                  className={cn(
+                    'rounded-lg border px-4 py-2.5 text-sm font-semibold transition-all',
+                    isRunning || dmEnrichmentRunning || loadingVerifiedDmProspects || !supabase
+                      ? 'cursor-not-allowed border-white/10 bg-white/[0.04] text-slate-500'
+                      : 'border-emerald-500/45 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20'
+                  )}
+                >
+                  <span className="flex items-center gap-2">
+                    {loadingVerifiedDmProspects ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
+                    {loadingVerifiedDmProspects ? 'Loading Verified DMs...' : 'Load Verified DMs'}
+                  </span>
+                </button>
               </div>
-              <p className="mt-2 text-[11px] text-slate-500">Safety lock enabled: engine only starts after a continuous 5-second hold.</p>
+              <p className="mt-2 text-[11px] text-slate-500">Safety lock enabled: engine only starts after a continuous 5-second hold. DM enrichment can run independently via edge function.</p>
             </div>
           </div>
 
@@ -1530,7 +2034,8 @@ export default function AIEngine() {
           </div>
         </div>
 
-        <div className="flex items-start gap-0 flex-wrap md:flex-nowrap">
+        <div className="overflow-x-auto pb-2">
+          <div className="flex min-w-[1160px] items-start gap-0">
           <PipelineNode icon={Database} label="Data Sync" sublabel="Supabase → BigQuery"
             active={status.step === 'syncing'} done={['enriching','verifying','training','scoring','complete'].includes(status.step)}
             stepNo={1}
@@ -1548,7 +2053,7 @@ export default function AIEngine() {
           <FlowConnector active={isRunning || status.step === 'complete'} step={status.step} targetStep="syncing" />
 
           <PipelineNode icon={Search} label="DM Enrichment" sublabel="Apollo + Exa + Vertex AI"
-            active={status.step === 'enriching'} done={['verifying','training','scoring','complete'].includes(status.step)}
+            active={status.step === 'enriching' || dmEnrichmentRunning} done={['verifying','training','scoring','complete'].includes(status.step)}
             stepNo={2}
             expanded={expandedNodes['enrich']} onToggle={() => toggleNode('enrich')}
             stats={liveNumbers.enriched > 0 ? [{ label: 'DMs Found', value: liveNumbers.enriched.toLocaleString() }] : undefined}>
@@ -1610,6 +2115,7 @@ export default function AIEngine() {
               <div className="p-2 rounded bg-slate-500/10 border border-slate-500/20"><span className="text-slate-400 text-[10px] font-semibold">COLD &lt;40%</span><p className="text-white text-xs">Low priority</p></div>
             </div>
           </PipelineNode>
+          </div>
         </div>
 
         {/* ═══ SINGLE GAS PUMP LEAD SCORE ═══ */}
@@ -1719,6 +2225,14 @@ export default function AIEngine() {
                     <span className="text-xs text-slate-500">|</span>
                   </>
                 )}
+                <button onClick={verifyWithGoogleBeforeOutreach} disabled={googleVerifying || filteredProspects.length === 0}
+                  className={cn('flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border',
+                    googleVerifying ? 'bg-white/5 text-slate-500 border-white/10' :
+                    'bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 border-sky-500/30')}>
+                  {googleVerifying
+                    ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Google {googleVerifyProgress.done}/{googleVerifyProgress.total}</>
+                    : <><CheckCircle className="w-3.5 h-3.5" /> Verify w/ Google</>}
+                </button>
                 <button onClick={addToSequenceWithAI} disabled={addingToSequence || emailProspectCount === 0}
                   className={cn('flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all',
                     addingToSequence ? 'bg-white/5 text-slate-500' :

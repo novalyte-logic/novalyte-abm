@@ -13,6 +13,7 @@ import {
   searchClinicsNearZip,
   type PatientLead, type LeadStatus, type NearbyClinic,
 } from '../services/patientLeadService';
+import { googleVerifyService } from '../services/googleVerifyService';
 import { sendReferralEmail } from '../services/leadReferralService';
 import { VoiceAgentService } from '../services/voiceAgentService';
 import toast from 'react-hot-toast';
@@ -75,6 +76,11 @@ function ClinicFinderPanel({ lead, onAssign, onClose }: {
   const [emailSent, setEmailSent] = useState<string | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [googleVerifying, setGoogleVerifying] = useState(false);
+  const [googleVerifyStatus, setGoogleVerifyStatus] = useState<'Verified' | 'Mismatch' | 'Not Found' | null>(null);
+  const [googleVerifyOfficialWebsite, setGoogleVerifyOfficialWebsite] = useState<string | null>(null);
+  const [googleVerifyConfirmedEmail, setGoogleVerifyConfirmedEmail] = useState<string | null>(null);
+  const [googleVerifyFoundEmails, setGoogleVerifyFoundEmails] = useState<string[]>([]);
 
   const doSearch = useCallback(async () => {
     if (!lead.zip_code) { setLoading(false); setSearchError('No zip code on this lead'); return; }
@@ -91,6 +97,32 @@ function ClinicFinderPanel({ lead, onAssign, onClose }: {
   }, [lead.zip_code, lead.treatment]);
 
   useEffect(() => { doSearch(); }, [doSearch]);
+
+  const handleGoogleVerifyClinic = async () => {
+    if (!selectedClinic) return;
+    if (!googleVerifyService.isConfigured) {
+      toast.error('Google verify is not configured (VITE_GOOGLE_VERIFY_FUNCTION_URL)');
+      return;
+    }
+    setGoogleVerifying(true);
+    toast.loading('Verifying with Google...', { id: `gverify-lead-${lead.id}` });
+    try {
+      const result = await googleVerifyService.verifyClinic(
+        // Send a minimal shape; the backend uses placeId to fetch website via Places details.
+        { name: selectedClinic.name, website: selectedClinic.website, googlePlaceId: selectedClinic.id } as any,
+        emailTo || null
+      );
+      setGoogleVerifyStatus(result.status);
+      setGoogleVerifyOfficialWebsite(result.officialWebsite || null);
+      setGoogleVerifyConfirmedEmail(result.confirmedEmail || null);
+      setGoogleVerifyFoundEmails(result.foundEmails || []);
+      toast.success(`Google verify: ${result.status}`, { id: `gverify-lead-${lead.id}` });
+    } catch (err: any) {
+      toast.error(err?.message || 'Google verify failed', { id: `gverify-lead-${lead.id}` });
+    } finally {
+      setGoogleVerifying(false);
+    }
+  };
 
   const handleSendReferral = async () => {
     if (!selectedClinic || !emailTo) return;
@@ -129,7 +161,16 @@ function ClinicFinderPanel({ lead, onAssign, onClose }: {
       ) : (
         <div className="space-y-1.5 max-h-[240px] overflow-y-auto">
           {clinics.map(c => (
-            <button key={c.id} onClick={() => { setSelectedClinic(c); setEmailTo(c.phone ? '' : ''); }}
+            <button
+              key={c.id}
+              onClick={() => {
+                setSelectedClinic(c);
+                setEmailTo('');
+                setGoogleVerifyStatus(null);
+                setGoogleVerifyOfficialWebsite(null);
+                setGoogleVerifyConfirmedEmail(null);
+                setGoogleVerifyFoundEmails([]);
+              }}
               className={cn(
                 'w-full text-left p-2.5 rounded-lg border transition-all',
                 selectedClinic?.id === c.id
@@ -184,6 +225,46 @@ function ClinicFinderPanel({ lead, onAssign, onClose }: {
               Send
             </button>
           </div>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-slate-500 uppercase tracking-wider">Google Verify</span>
+              <span className={cn(
+                'text-[10px] font-semibold px-2 py-0.5 rounded border',
+                googleVerifyStatus === 'Verified' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
+                googleVerifyStatus === 'Mismatch' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' :
+                googleVerifyStatus === 'Not Found' ? 'bg-slate-500/10 text-slate-400 border-white/[0.06]' :
+                'bg-white/5 text-slate-500 border-white/[0.06]'
+              )}>
+                {googleVerifyStatus || '—'}
+              </span>
+            </div>
+            <button
+              onClick={handleGoogleVerifyClinic}
+              disabled={googleVerifying}
+              className="text-[10px] text-novalyte-400 hover:text-novalyte-300 underline disabled:opacity-50"
+              title={googleVerifyService.isConfigured ? 'Verify clinic website + confirmed email' : 'Set VITE_GOOGLE_VERIFY_FUNCTION_URL'}
+            >
+              {googleVerifying ? 'Verifying...' : 'Verify with Google'}
+            </button>
+          </div>
+          {googleVerifyConfirmedEmail && (
+            <p className="text-[10px] text-slate-400">
+              Confirmed: <span className="text-novalyte-400">{googleVerifyConfirmedEmail}</span>
+            </p>
+          )}
+          {googleVerifyOfficialWebsite && (
+            <p className="text-[10px] text-slate-400">
+              Official site:{' '}
+              <a href={googleVerifyOfficialWebsite} target="_blank" rel="noopener" className="text-blue-400 hover:underline">
+                {googleVerifyOfficialWebsite.replace(/^https?:\/\//, '')}
+              </a>
+            </p>
+          )}
+          {googleVerifyStatus === 'Mismatch' && googleVerifyFoundEmails.length > 0 && (
+            <p className="text-[10px] text-slate-500">
+              Found: {googleVerifyFoundEmails.slice(0, 3).join(', ')}{googleVerifyFoundEmails.length > 3 ? '…' : ''}
+            </p>
+          )}
           {emailSent && <p className="text-[10px] text-emerald-400">✅ {emailSent}</p>}
           {emailError && <p className="text-[10px] text-red-400">❌ {emailError}</p>}
           <div className="flex gap-2">

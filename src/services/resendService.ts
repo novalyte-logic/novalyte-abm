@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { CRMContact } from '../types';
+import { isSupabaseConfigured, supabase } from '../lib/supabase';
 
 /* ─── Types ─── */
 
@@ -20,6 +21,8 @@ export interface SentEmail {
   clickCount: number;
   sequenceStep?: 'intro' | 'follow_up' | 'breakup';
   aiGenerated?: boolean;
+  /** Provider that sent the message. Default is 'resend'. */
+  provider?: 'resend' | 'smtp';
 }
 
 export interface EmailTemplate {
@@ -117,7 +120,8 @@ export class ResendService {
   }
 
   get isConfigured(): boolean {
-    return !!this.apiKey;
+    // Prefer server-side sending via Supabase Edge Function; fall back to client API key if present.
+    return !!this.apiKey || (isSupabaseConfigured && !!supabase);
   }
 
   private get headers() {
@@ -134,23 +138,45 @@ export class ResendService {
     market: string;
     tags?: { name: string; value: string }[];
   }): Promise<SentEmail> {
-    // Use Cloud Function proxy (handles API key server-side)
-    const { data } = await axios.post<{ id: string }>(
-      RESEND_PROXY,
-      {
+    const payload = {
+      to: params.to,
+      subject: params.subject,
+      html: params.html,
+      from: FROM_ADDRESS,
+      tags: [
+        { name: 'contact_id', value: params.contactId },
+        { name: 'clinic', value: params.clinicName.slice(0, 256) },
+        { name: 'market', value: params.market.slice(0, 256) },
+        ...(params.tags || []),
+      ],
+    };
+
+    // Primary: Supabase Edge Function (keeps API key server-side; avoids broken GCP proxy).
+    if (isSupabaseConfigured && supabase) {
+      const { data, error } = await supabase.functions.invoke('resend-send', { body: payload });
+      if (error) throw new Error(error.message);
+      if (!data?.id) throw new Error('Resend send failed: missing id');
+      return {
+        id: data.id,
+        contactId: params.contactId,
         to: params.to,
-        subject: params.subject,
-        html: params.html,
         from: FROM_ADDRESS,
-        tags: [
-          { name: 'contact_id', value: params.contactId },
-          { name: 'clinic', value: params.clinicName.slice(0, 256) },
-          { name: 'market', value: params.market.slice(0, 256) },
-          ...(params.tags || []),
-        ],
-      },
-      { headers: { 'Content-Type': 'application/json' } }
-    );
+        subject: params.subject,
+        clinicName: params.clinicName,
+        market: params.market,
+        sentAt: new Date(),
+        lastEvent: 'sent',
+        lastEventAt: new Date(),
+        openCount: 0,
+        clickCount: 0,
+        provider: 'resend',
+      };
+    }
+
+    // Fallback: legacy GCP proxy (may be disabled/403 in some deployments).
+    const { data } = await axios.post<{ id: string }>(RESEND_PROXY, payload, {
+      headers: { 'Content-Type': 'application/json' },
+    });
 
     return {
       id: data.id,
@@ -165,6 +191,7 @@ export class ResendService {
       lastEventAt: new Date(),
       openCount: 0,
       clickCount: 0,
+      provider: 'resend',
     };
   }
 
@@ -264,6 +291,8 @@ export class ResendService {
       const results = await Promise.allSettled(
         batch.map(async em => {
           try {
+            // SMTP sends don't have Resend tracking; keep as-is.
+            if (em.provider && em.provider !== 'resend') return em;
             const status = await this.getEmailStatus(em.id);
             const newEvent = status.lastEvent as EmailEvent;
             return {

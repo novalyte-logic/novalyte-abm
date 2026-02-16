@@ -353,6 +353,12 @@ export class EnrichmentService {
             confidence = person.email_status === 'verified' ? 95 : person.email_status === 'guessed' ? 70 : 65;
           }
 
+          const apolloEmailStatus = String(person.email_status || '').toLowerCase();
+          const emailVerificationStatus =
+            apolloEmailStatus === 'verified'
+              ? 'valid'
+              : 'unknown';
+
           return {
             id: `dm-${person.id}`,
             clinicId: clinic.id,
@@ -366,6 +372,9 @@ export class EnrichmentService {
             confidence,
             enrichedAt: new Date(),
             source: 'apollo' as DataSource,
+            // Apollo's `email_status=verified` is treated as deliverable/valid.
+            emailVerified: emailVerificationStatus === 'valid',
+            emailVerificationStatus,
           };
         })
         // Sort: owners first, then by confidence

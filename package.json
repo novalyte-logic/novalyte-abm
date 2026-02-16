@@ -13,7 +13,10 @@
     "scan:keywords": "npx tsx src/scripts/scanKeywords.ts",
     "discover:clinics": "npx tsx src/scripts/discoverClinics.ts",
     "sync:crm": "npx tsx src/scripts/syncCrm.ts",
-    "verify:dm-emails": "npx tsx src/scripts/verifyDmEmails.ts"
+    "verify:dm-emails": "npx tsx src/scripts/verifyDmEmails.ts",
+    "enrich:dm-emails:leadmagic": "npx tsx src/scripts/enrichDmEmailsLeadMagic.ts",
+    "enrich:dm-emails:apollo": "npx tsx src/scripts/enrichDmEmailsApollo.ts",
+    "run:dm-enrichment-batch": "npx tsx src/scripts/runDmEnrichmentBatch.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.95.3",

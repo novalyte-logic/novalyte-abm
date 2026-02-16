@@ -11,8 +11,11 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
 import { resendService, SentEmail, EmailEvent } from '../services/resendService';
-import { generatePersonalizedEmail, getSequenceQueue, computeSequenceState, SequenceStep } from '../services/intelligenceService';
+import { generatePersonalizedEmail, SequenceStep } from '../services/intelligenceService';
 import { voiceAgentService } from '../services/voiceAgentService';
+import { smtpSendService } from '../services/smtpSendService';
+import { vertexAI } from '../services/vertexAI';
+import { googleVerifyService } from '../services/googleVerifyService';
 import { CRMContact } from '../types';
 import { cn } from '../utils/cn';
 import toast from 'react-hot-toast';
@@ -99,28 +102,37 @@ export default function EmailOutreach() {
 
   const [tab, setTab] = useState<Tab>('compose');
   const [refreshing, setRefreshing] = useState(false);
+  const [sendProvider, setSendProvider] = useState<'resend' | 'smtp'>('resend');
 
   const isConfigured = resendService.isConfigured;
+  const smtpConfigured = smtpSendService.isConfigured;
 
   /* ─── Stats ─── */
   const stats = useMemo(() => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const todayEmails = sentEmails.filter(e => new Date(e.sentAt) >= today);
+    const resendToday = todayEmails.filter(e => !e.provider || e.provider === 'resend');
+    const smtpToday = todayEmails.filter(e => e.provider === 'smtp');
     const delivered = todayEmails.filter(e => e.lastEvent === 'delivered' || e.lastEvent === 'opened' || e.lastEvent === 'clicked');
     const opened = todayEmails.filter(e => e.lastEvent === 'opened' || e.lastEvent === 'clicked');
     const bounced = todayEmails.filter(e => e.lastEvent === 'bounced');
     const clicked = todayEmails.filter(e => e.lastEvent === 'clicked');
     return {
       sentToday: todayEmails.length,
+      resendSentToday: resendToday.length,
+      smtpSentToday: smtpToday.length,
       delivered: delivered.length,
       opened: opened.length,
       bounced: bounced.length,
       clicked: clicked.length,
       openRate: todayEmails.length ? Math.round((opened.length / todayEmails.length) * 100) : 0,
-      remaining: Math.max(0, 100 - todayEmails.length),
+      resendRemaining: Math.max(0, 100 - resendToday.length),
+      smtpRemaining: Math.max(0, 900 - smtpToday.length),
       total: sentEmails.length,
     };
   }, [sentEmails]);
+
+  const remainingForProvider = sendProvider === 'smtp' ? stats.smtpRemaining : stats.resendRemaining;
 
   /* ─── Refresh statuses ─── */
   const handleRefreshStatuses = useCallback(async () => {
@@ -147,10 +159,27 @@ export default function EmailOutreach() {
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-slate-100">Email Outreach</h1>
           <p className="text-sm text-slate-400 mt-1">
-            AI-powered email campaigns — {stats.remaining} sends remaining today
+            AI-powered email campaigns — {stats.resendRemaining} V-send left · {stats.smtpRemaining} SMTP left today
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium bg-white/[0.03] border border-white/[0.06]">
+            <span className="text-slate-500">Provider</span>
+            <select
+              value={sendProvider}
+              onChange={e => setSendProvider(e.target.value as any)}
+              className="bg-transparent text-slate-200 outline-none"
+              title="Choose sending provider"
+            >
+              <option value="resend">V-send (Resend)</option>
+              <option value="smtp">SMTP</option>
+            </select>
+            <span className={cn('text-[10px] px-2 py-0.5 rounded-full',
+              sendProvider === 'resend' ? 'bg-novalyte-500/20 text-novalyte-300' : 'bg-blue-500/10 text-blue-300'
+            )}>
+              {remainingForProvider} left
+            </span>
+          </div>
           <button onClick={handleRefreshStatuses} disabled={refreshing || sentEmails.length === 0}
             className="btn btn-secondary gap-2">
             <RefreshCw className={cn('w-4 h-4', refreshing && 'animate-spin')} />
@@ -162,6 +191,13 @@ export default function EmailOutreach() {
           )}>
             <Radio className={cn('w-3 h-3', isConfigured && 'animate-subtle-pulse')} />
             {isConfigured ? 'Resend Connected' : 'Resend Not Configured'}
+          </div>
+          <div className={cn(
+            'flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium',
+            smtpConfigured ? 'bg-blue-500/10 text-blue-300 ring-1 ring-blue-500/20' : 'bg-slate-500/10 text-slate-500 ring-1 ring-white/[0.06]'
+          )}>
+            <Radio className={cn('w-3 h-3', smtpConfigured && 'animate-subtle-pulse')} />
+            {smtpConfigured ? 'SMTP Connected' : 'SMTP Not Configured'}
           </div>
         </div>
       </div>
@@ -215,7 +251,8 @@ export default function EmailOutreach() {
           addSentEmails={addSentEmails}
           updateContact={updateContact}
           isConfigured={isConfigured}
-          remaining={stats.remaining}
+          remaining={remainingForProvider}
+          provider={sendProvider}
         />
       )}
       {tab === 'manual' && (
@@ -225,11 +262,12 @@ export default function EmailOutreach() {
           addSentEmails={addSentEmails}
           updateContact={updateContact}
           isConfigured={isConfigured}
-          remaining={stats.remaining}
+          remaining={remainingForProvider}
+          provider={sendProvider}
         />
       )}
       {tab === 'sequences' && (
-        <SequencesTab contacts={contacts} sentEmails={sentEmails} />
+        <SequencesTab contacts={contacts} sentEmails={sentEmails} provider={sendProvider} remaining={remainingForProvider} />
       )}
       {tab === 'stream' && (
         <StreamTab emails={sentEmails} onRefresh={handleRefreshStatuses} refreshing={refreshing} />
@@ -260,6 +298,7 @@ interface GeneratedDraft {
 
 function ComposeTab({
   contacts, sentEmails, addSentEmails, updateContact, isConfigured, remaining,
+  provider,
 }: {
   contacts: CRMContact[];
   sentEmails: SentEmail[];
@@ -267,7 +306,9 @@ function ComposeTab({
   updateContact: (id: string, updates: Partial<CRMContact>) => void;
   isConfigured: boolean;
   remaining: number;
+  provider: 'resend' | 'smtp';
 }) {
+  const { addContacts, markets, selectedMarket } = useAppStore();
   const [search, setSearch] = useState('');
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -284,9 +325,12 @@ function ComposeTab({
   const [verifyProgress, setVerifyProgress] = useState({ done: 0, total: 0 });
   const [showImport, setShowImport] = useState(false);
   const [importText, setImportText] = useState('');
+  const [importUnmatched, setImportUnmatched] = useState<string[]>([]);
   const [filterStatus, setFilterStatus] = useState<'all' | 'verified' | 'risky' | 'unverified'>('all');
   const [sortBy, setSortBy] = useState<'score' | 'name' | 'city' | 'confidence'>('score');
   const [aiDirection, setAiDirection] = useState('');
+  const [googleVerifying, setGoogleVerifying] = useState(false);
+  const [googleVerifyProgress, setGoogleVerifyProgress] = useState({ done: 0, total: 0 });
 
   // Eligible contacts: have email, not emailed today
   const eligible = useMemo(() => {
@@ -343,14 +387,16 @@ function ComposeTab({
   };
 
   const selectAllClinics = () => {
-    setSelectedIds(new Set(eligible.slice(0, 100).map(c => c.id)));
+    const cap = Math.max(0, Math.min(eligible.length, remaining || eligible.length));
+    setSelectedIds(new Set(eligible.slice(0, cap).map(c => c.id)));
     setDropdownOpen(false);
   };
 
   const selectAllFiltered = () => {
     setSelectedIds(prev => {
       const s = new Set(prev);
-      filtered.slice(0, 100).forEach(c => s.add(c.id));
+      const cap = Math.max(0, Math.min(filtered.length, remaining || filtered.length));
+      filtered.slice(0, cap).forEach(c => s.add(c.id));
       return s;
     });
   };
@@ -372,7 +418,7 @@ function ComposeTab({
       eligible.filter(c => {
         const { status } = getEmailConfidence(c, verifications);
         return status === 'valid';
-      }).slice(0, 100).map(c => c.id)
+      }).slice(0, Math.max(0, Math.min(eligible.length, remaining || eligible.length))).map(c => c.id)
     ));
   };
 
@@ -384,6 +430,7 @@ function ComposeTab({
     if (imported.length === 0) { toast.error('No valid email addresses found'); return; }
     // Match imported emails to existing contacts
     let matched = 0;
+    const unmatched: string[] = [];
     const newSelected = new Set(selectedIds);
     for (const email of imported) {
       const contact = eligible.find(c => {
@@ -391,11 +438,137 @@ function ComposeTab({
         return ce && ce.toLowerCase() === email;
       });
       if (contact) { newSelected.add(contact.id); matched++; }
+      else unmatched.push(email);
     }
     setSelectedIds(newSelected);
+    setImportUnmatched(unmatched);
+    toast.success(`Imported ${imported.length} emails — ${matched} matched to CRM contacts, ${unmatched.length} unmatched`);
+  };
+
+  const handleCreateLeadsForUnmatched = () => {
+    if (importUnmatched.length === 0) return;
+    const market = selectedMarket || markets?.[0];
+    if (!market) { toast.error('No market configured'); return; }
+
+    const byDomain = new Map<string, string>();
+    for (const e of importUnmatched) {
+      const domain = String(e.split('@')[1] || '').toLowerCase().trim();
+      if (!domain) continue;
+      if (!byDomain.has(domain)) byDomain.set(domain, e);
+    }
+    const domains = Array.from(byDomain.keys());
+    if (domains.length === 0) { toast.error('No valid domains found'); return; }
+
+    const newContacts: CRMContact[] = [];
+    for (const domain of domains) {
+      const email = byDomain.get(domain)!;
+      const clinicId = `clinic-import-${domain.replace(/[^a-z0-9.-]/g, '-')}`;
+      const contactId = `contact-import-${clinicId}`;
+      const local = String(email.split('@')[0] || '').replace(/[^a-zA-Z0-9]+/g, ' ').trim();
+      const parts = local.split(/\s+/).filter(Boolean);
+      const firstName = (parts[0] || 'Imported').slice(0, 32);
+      const lastName = (parts.slice(1).join(' ') || 'Lead').slice(0, 32);
+      const clinicName = domain.replace(/^www\./, '');
+
+      newContacts.push({
+        id: contactId,
+        clinic: {
+          id: clinicId,
+          name: clinicName,
+          type: 'mens_health_clinic',
+          address: { street: '', city: '', state: '', zip: '', country: 'USA' },
+          phone: '',
+          email,
+          website: `https://${clinicName}`,
+          managerName: `${firstName} ${lastName}`.trim(),
+          managerEmail: email,
+          ownerName: undefined,
+          ownerEmail: undefined,
+          services: [],
+          marketZone: market,
+          discoveredAt: new Date(),
+          lastUpdated: new Date(),
+        },
+        decisionMaker: {
+          id: `dm-import-${clinicId}`,
+          clinicId,
+          firstName,
+          lastName,
+          title: 'Imported Lead',
+          role: 'clinic_manager',
+          email,
+          phone: undefined,
+          linkedInUrl: undefined,
+          confidence: 40,
+          enrichedAt: new Date(),
+          source: 'manual',
+          emailVerified: false,
+          emailVerificationStatus: 'unknown',
+        },
+        status: 'ready_to_call',
+        priority: 'medium',
+        score: 50,
+        tags: ['imported-email'],
+        notes: 'Imported email list lead (no clinic enrichment yet).',
+        keywordMatches: [],
+        activities: [],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+    }
+
+    if (newContacts.length === 0) { toast.error('No leads created'); return; }
+    addContacts(newContacts);
+    // Select newly created contacts (they may not be in eligible due to emailed-today filter; still helpful).
+    setSelectedIds(prev => {
+      const s = new Set(prev);
+      for (const c of newContacts) s.add(c.id);
+      return s;
+    });
+    setImportUnmatched([]);
     setShowImport(false);
     setImportText('');
-    toast.success(`Imported ${imported.length} emails — ${matched} matched to CRM contacts, ${imported.length - matched} not in CRM`);
+    toast.success(`Created ${newContacts.length} lead${newContacts.length !== 1 ? 's' : ''} in CRM from unmatched emails`);
+  };
+
+  /* ── Google Verify (Bulk) ── */
+  const handleGoogleVerifySelected = async () => {
+    if (googleVerifying || selectedContacts.length === 0) return;
+    if (!googleVerifyService.isConfigured) {
+      toast.error('Google verify is not configured (VITE_GOOGLE_VERIFY_FUNCTION_URL)');
+      return;
+    }
+    setGoogleVerifying(true);
+    setGoogleVerifyProgress({ done: 0, total: selectedContacts.length });
+    toast.loading(`Verifying ${selectedContacts.length} clinics with Google...`, { id: 'gverify-bulk' });
+    try {
+      for (let i = 0; i < selectedContacts.length; i++) {
+        const c = selectedContacts[i];
+        const leadEmail = getContactEmail(c);
+        try {
+          const result = await googleVerifyService.verifyClinic(c.clinic, leadEmail);
+          const clinicUpdates: any = {
+            googleVerifyStatus: result.status,
+            googleVerifyOfficialWebsite: result.officialWebsite || undefined,
+            googleVerifyConfirmedEmail: result.confirmedEmail || undefined,
+            googleVerifyFoundEmails: result.foundEmails || [],
+            googleVerifyCheckedAt: result.checkedAt,
+          };
+          if (result.officialWebsite) clinicUpdates.website = result.officialWebsite;
+          updateContact(c.id, { clinic: { ...c.clinic, ...clinicUpdates } } as any);
+        } catch {
+          // ignore per-item failures
+        }
+        setGoogleVerifyProgress({ done: i + 1, total: selectedContacts.length });
+        // gentle pacing to avoid hammering
+        await new Promise(r => setTimeout(r, 250));
+      }
+      toast.success('Google verify complete', { id: 'gverify-bulk' });
+    } catch {
+      toast.error('Google verify failed', { id: 'gverify-bulk' });
+    } finally {
+      setGoogleVerifying(false);
+    }
   };
 
   /* ── Email Verification ── */
@@ -558,6 +731,8 @@ function ComposeTab({
 
   const handleSendAll = async () => {
     if (sending || drafts.size === 0) return;
+    if (provider === 'resend' && !isConfigured) { toast.error('V-send (Resend) not configured'); return; }
+    if (provider === 'smtp' && !smtpSendService.isConfigured) { toast.error('SMTP not configured'); return; }
     setSending(true);
     const toSend = Array.from(drafts.values()).slice(0, remaining);
     setSendProgress({ sent: 0, total: toSend.length });
@@ -566,11 +741,9 @@ function ComposeTab({
     for (let i = 0; i < toSend.length; i++) {
       const draft = toSend[i];
       try {
-        const result = await resendService.sendAIPersonalized(
-          draft.contact, draft.email,
-          { subject: draft.subject, html: draft.html },
-          draft.step
-        );
+        const result = provider === 'smtp'
+          ? await smtpSendService.sendAIPersonalized(draft.contact, draft.email, { subject: draft.subject, html: draft.html, text: draft.plainText }, draft.step)
+          : await resendService.sendAIPersonalized(draft.contact, draft.email, { subject: draft.subject, html: draft.html }, draft.step);
         addSentEmails([result]);
         const ct = contacts.find(c => c.id === draft.contactId);
         if (ct) {
@@ -602,12 +775,21 @@ function ComposeTab({
 
   return (
     <div className="space-y-4">
-      {!isConfigured && (
+      {provider === 'resend' && !isConfigured && (
         <div className="glass-card p-4 border-amber-500/20 flex items-center gap-3">
           <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
           <div>
             <p className="text-sm text-amber-300 font-medium">Resend not configured</p>
             <p className="text-xs text-slate-400">Add VITE_RESEND_API_KEY to .env to enable sending.</p>
+          </div>
+        </div>
+      )}
+      {provider === 'smtp' && !smtpSendService.isConfigured && (
+        <div className="glass-card p-4 border-amber-500/20 flex items-center gap-3">
+          <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
+          <div>
+            <p className="text-sm text-amber-300 font-medium">SMTP not configured</p>
+            <p className="text-xs text-slate-400">Set VITE_SMTP_SEND_FUNCTION_URL (and deploy the smtp-send Cloud Function) to enable SMTP sending.</p>
           </div>
         </div>
       )}
@@ -695,8 +877,25 @@ function ComposeTab({
               placeholder="john@clinic.com, jane@medspa.com&#10;dr.smith@health.com&#10;Or paste any text containing email addresses..."
               rows={4}
               className="w-full px-3 py-2 rounded-lg bg-white/[0.03] border border-white/[0.08] text-sm text-slate-200 placeholder:text-slate-600 outline-none focus:border-novalyte-500/30 resize-y font-mono" />
+            {importUnmatched.length > 0 && (
+              <div className="rounded-lg bg-amber-500/5 border border-amber-500/15 p-3">
+                <p className="text-[11px] text-amber-300 font-medium">{importUnmatched.length} unmatched email{importUnmatched.length !== 1 ? 's' : ''}</p>
+                <p className="text-[10px] text-slate-500 mt-0.5">
+                  You can create lightweight CRM leads for unmatched emails (domain-based clinic shell), then enroll them in sequences.
+                </p>
+                <div className="flex items-center justify-between gap-2 mt-2">
+                  <p className="text-[10px] text-slate-600 truncate">
+                    Example: {importUnmatched[0]}
+                    {importUnmatched.length > 1 ? ` +${importUnmatched.length - 1} more` : ''}
+                  </p>
+                  <button onClick={handleCreateLeadsForUnmatched} className="btn btn-secondary text-xs">
+                    <Plus className="w-3.5 h-3.5" /> Create Leads
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="flex items-center gap-2 justify-end">
-              <button onClick={() => { setShowImport(false); setImportText(''); }} className="btn btn-secondary text-xs">Cancel</button>
+              <button onClick={() => { setShowImport(false); setImportText(''); setImportUnmatched([]); }} className="btn btn-secondary text-xs">Cancel</button>
               <button onClick={handleImportEmails} disabled={!importText.trim()} className="btn btn-primary text-xs gap-1">
                 <Upload className="w-3.5 h-3.5" /> Import & Match
               </button>
@@ -723,6 +922,16 @@ function ComposeTab({
                   <Trash2 className="w-3 h-3" /> Remove Invalid ({verificationSummary.invalid})
                 </button>
               )}
+              <button onClick={handleGoogleVerifySelected} disabled={googleVerifying || selectedIds.size === 0}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium bg-sky-500/10 text-sky-400 border border-sky-500/20 hover:bg-sky-500/20 transition-colors disabled:opacity-50"
+                title={googleVerifyService.isConfigured ? 'Verify official website + confirmed email' : 'Set VITE_GOOGLE_VERIFY_FUNCTION_URL'}
+              >
+                {googleVerifying ? (
+                  <><Loader2 className="w-3 h-3 animate-spin" /> Google {googleVerifyProgress.done}/{googleVerifyProgress.total}</>
+                ) : (
+                  <><CheckCircle className="w-3.5 h-3.5" /> Verify w/ Google</>
+                )}
+              </button>
               <button onClick={handleVerifyEmails} disabled={verifying || selectedIds.size === 0}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20 transition-colors disabled:opacity-50">
                 {verifying ? (
@@ -736,6 +945,13 @@ function ComposeTab({
               <div className="w-full mt-1">
                 <div className="w-full h-1 bg-white/5 rounded-full overflow-hidden">
                   <div className="h-full bg-emerald-500 rounded-full transition-all" style={{ width: `${verifyProgress.total ? (verifyProgress.done / verifyProgress.total) * 100 : 0}%` }} />
+                </div>
+              </div>
+            )}
+            {googleVerifying && (
+              <div className="w-full -mt-1">
+                <div className="w-full h-1 bg-white/5 rounded-full overflow-hidden">
+                  <div className="h-full bg-sky-500 rounded-full transition-all" style={{ width: `${googleVerifyProgress.total ? (googleVerifyProgress.done / googleVerifyProgress.total) * 100 : 0}%` }} />
                 </div>
               </div>
             )}
@@ -1046,13 +1262,13 @@ function ComposeTab({
                 <p className="text-[10px] text-slate-500">{remaining} sends remaining today</p>
               </div>
             </div>
-            <button onClick={handleSendAll}
-              disabled={!isConfigured || sending || readyDrafts.length === 0 || remaining === 0}
+          <button onClick={handleSendAll}
+              disabled={(provider === 'resend' ? !isConfigured : !smtpSendService.isConfigured) || sending || readyDrafts.length === 0 || remaining === 0}
               className={cn('btn gap-2', sending ? 'btn-secondary' : 'btn-primary')}>
-              {sending ? (
-                <><Loader2 className="w-4 h-4 animate-spin" /> Sending {sendProgress.sent}/{sendProgress.total}</>
-              ) : (
-                <><Send className="w-4 h-4" /> Send {Math.min(readyDrafts.length, remaining)} Emails</>
+            {sending ? (
+              <><Loader2 className="w-4 h-4 animate-spin" /> Sending {sendProgress.sent}/{sendProgress.total}</>
+            ) : (
+              <><Send className="w-4 h-4" /> Send {Math.min(readyDrafts.length, remaining)} Emails</>
               )}
             </button>
           </div>
@@ -1077,6 +1293,7 @@ function ComposeTab({
 
 function ManualComposeTab({
   contacts, addSentEmails, updateContact, isConfigured, remaining,
+  provider,
 }: {
   contacts: CRMContact[];
   sentEmails: SentEmail[];
@@ -1084,6 +1301,7 @@ function ManualComposeTab({
   updateContact: (id: string, updates: Partial<CRMContact>) => void;
   isConfigured: boolean;
   remaining: number;
+  provider: 'resend' | 'smtp';
 }) {
   const [toEmail, setToEmail] = useState('');
   const [toEmails, setToEmails] = useState<string[]>([]);
@@ -1093,6 +1311,28 @@ function ManualComposeTab({
   const [sendProgress, setSendProgress] = useState({ sent: 0, total: 0 });
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [bulkText, setBulkText] = useState('');
+
+  // AI Sidecar (Vertex AI / Gemini) — drafts subject + body based on optional context.
+  const [aiDirection, setAiDirection] = useState('');
+  const [aiContext, setAiContext] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiSuggestion, setAiSuggestion] = useState<{ subject: string; body: string } | null>(null);
+  const [contextSearch, setContextSearch] = useState('');
+  const [contextContactId, setContextContactId] = useState<string>('');
+
+  const contextCandidates = useMemo(() => {
+    if (!contextSearch.trim()) return [];
+    const q = contextSearch.toLowerCase();
+    return contacts
+      .filter(c =>
+        c.clinic.name.toLowerCase().includes(q) ||
+        c.clinic.address.city.toLowerCase().includes(q) ||
+        (getContactEmail(c) || '').toLowerCase().includes(q) ||
+        (c.decisionMaker && `${c.decisionMaker.firstName} ${c.decisionMaker.lastName}`.toLowerCase().includes(q))
+      )
+      .slice(0, 8);
+  }, [contacts, contextSearch]);
 
   const addEmail = () => {
     const email = toEmail.trim().toLowerCase();
@@ -1119,13 +1359,15 @@ function ManualComposeTab({
   };
 
   const handleSend = async () => {
-    if (!isConfigured) { toast.error('Resend not configured'); return; }
+    if (provider === 'resend' && !isConfigured) { toast.error('V-send (Resend) not configured'); return; }
+    if (provider === 'smtp' && !smtpSendService.isConfigured) { toast.error('SMTP not configured'); return; }
     if (toEmails.length === 0) { toast.error('Add at least one recipient'); return; }
     if (!subject.trim()) { toast.error('Subject is required'); return; }
     if (!body.trim()) { toast.error('Body is required'); return; }
 
     setSending(true);
-    setSendProgress({ sent: 0, total: toEmails.length });
+    const toSend = toEmails.slice(0, remaining);
+    setSendProgress({ sent: 0, total: toSend.length });
     let successCount = 0;
 
     const htmlBody = body.split('\n').map(l => l.trim()).filter(Boolean)
@@ -1133,8 +1375,8 @@ function ManualComposeTab({
       .join('\n');
     const html = `<div style="font-family:Inter,Arial,sans-serif;color:#1e293b;max-width:600px;margin:0 auto;padding:24px;">${htmlBody}</div>`;
 
-    for (let i = 0; i < toEmails.length; i++) {
-      const email = toEmails[i];
+    for (let i = 0; i < toSend.length; i++) {
+      const email = toSend[i];
       try {
         // Try to match to a CRM contact
         const contact = contacts.find(c => {
@@ -1142,15 +1384,26 @@ function ManualComposeTab({
           return ce && ce.toLowerCase() === email;
         });
 
-        const result = await resendService.sendEmail({
-          to: email,
-          subject: subject.trim(),
-          html,
-          contactId: contact?.id || `manual-${Date.now()}-${i}`,
-          clinicName: contact?.clinic.name || email.split('@')[1] || 'Manual',
-          market: contact ? `${contact.clinic.marketZone.city}, ${contact.clinic.marketZone.state}` : 'Manual',
-          tags: [{ name: 'source', value: 'manual_compose' }],
-        });
+        const result = provider === 'smtp'
+          ? await smtpSendService.sendEmail({
+              to: email,
+              subject: subject.trim(),
+              html,
+              text: body,
+              contactId: contact?.id || `manual-${Date.now()}-${i}`,
+              clinicName: contact?.clinic.name || email.split('@')[1] || 'Manual',
+              market: contact ? `${contact.clinic.marketZone.city}, ${contact.clinic.marketZone.state}` : 'Manual',
+              tags: [{ name: 'source', value: 'manual_compose' }],
+            })
+          : await resendService.sendEmail({
+              to: email,
+              subject: subject.trim(),
+              html,
+              contactId: contact?.id || `manual-${Date.now()}-${i}`,
+              clinicName: contact?.clinic.name || email.split('@')[1] || 'Manual',
+              market: contact ? `${contact.clinic.marketZone.city}, ${contact.clinic.marketZone.state}` : 'Manual',
+              tags: [{ name: 'source', value: 'manual_compose' }],
+            });
         addSentEmails([result]);
 
         if (contact) {
@@ -1168,13 +1421,13 @@ function ManualComposeTab({
       } catch (err: any) {
         console.warn(`Send failed for ${email}:`, err);
       }
-      setSendProgress({ sent: i + 1, total: toEmails.length });
-      if (i < toEmails.length - 1) await new Promise(r => setTimeout(r, 1200));
+      setSendProgress({ sent: i + 1, total: toSend.length });
+      if (i < toSend.length - 1) await new Promise(r => setTimeout(r, 1200));
     }
 
     setSending(false);
     if (successCount > 0) {
-      toast.success(`Sent ${successCount}/${toEmails.length} emails`);
+      toast.success(`Sent ${successCount}/${toSend.length} emails`);
       setToEmails([]);
       setSubject('');
       setBody('');
@@ -1183,14 +1436,89 @@ function ManualComposeTab({
     }
   };
 
+  const generateWithAI = async () => {
+    if (aiLoading) return;
+    if (!vertexAI.isConfigured) {
+      toast.error('Vertex AI / Gemini not configured (VITE_GEMINI_API_KEY or Vertex credentials)');
+      return;
+    }
+    setAiLoading(true);
+    setAiError(null);
+    try {
+      const ctxContact = contextContactId ? contacts.find(c => c.id === contextContactId) : null;
+      const ctx = ctxContact ? {
+        clinic: {
+          name: ctxContact.clinic.name,
+          city: ctxContact.clinic.address.city,
+          state: ctxContact.clinic.address.state,
+          services: ctxContact.clinic.services,
+          rating: ctxContact.clinic.rating,
+          website: ctxContact.clinic.website,
+        },
+        decisionMaker: ctxContact.decisionMaker ? {
+          firstName: ctxContact.decisionMaker.firstName,
+          lastName: ctxContact.decisionMaker.lastName,
+          title: ctxContact.decisionMaker.title,
+        } : null,
+        keyword: ctxContact.keywordMatches?.[0] ? {
+          keyword: ctxContact.keywordMatches[0].keyword,
+          growthRate: ctxContact.keywordMatches[0].growthRate,
+        } : null,
+      } : null;
+
+      const prompt = [
+        "You are an expert outbound email copywriter for a men's health clinic marketing product (Novalyte).",
+        'Write a complete cold outreach email with a clear offer and a short CTA.',
+        '',
+        'Output STRICT JSON only with keys: subject, body.',
+        'The body must be plain text with line breaks (no markdown).',
+        '',
+        aiDirection ? `DIRECTION:\\n${aiDirection}` : '',
+        aiContext ? `EXTRA CONTEXT (user uploaded):\\n${aiContext}` : '',
+        ctx ? `CRM CONTEXT (if present):\\n${JSON.stringify(ctx)}` : '',
+        '',
+        'Constraints:',
+        '- Keep it under 160 words.',
+        '- Avoid hype, avoid buzzwords, avoid emojis.',
+        "- Personalize using the context if available, otherwise stay generic but specific to men's health clinics.",
+      ].filter(Boolean).join('\\n');
+
+      const resp = await vertexAI.generateContent({
+        model: 'gemini-2.0-flash',
+        prompt,
+        temperature: 0.4,
+        maxOutputTokens: 900,
+      });
+      const parsed = vertexAI.parseJSON<{ subject: string; body: string }>(resp.text);
+      if (!parsed?.subject || !parsed?.body) {
+        throw new Error('AI response was not valid JSON with subject/body');
+      }
+      setAiSuggestion({ subject: parsed.subject.trim(), body: parsed.body.trim() });
+    } catch (err: any) {
+      setAiError(err?.message || 'AI draft failed');
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
   return (
-    <div className="space-y-4">
-      {!isConfigured && (
+    <div className="grid grid-cols-1 lg:grid-cols-[1.15fr_0.85fr] gap-4">
+      <div className="space-y-4">
+      {provider === 'resend' && !isConfigured && (
         <div className="glass-card p-4 border-amber-500/20 flex items-center gap-3">
           <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
           <div>
             <p className="text-sm text-amber-300 font-medium">Resend not configured</p>
             <p className="text-xs text-slate-400">Add VITE_RESEND_API_KEY to .env to enable sending.</p>
+          </div>
+        </div>
+      )}
+      {provider === 'smtp' && !smtpSendService.isConfigured && (
+        <div className="glass-card p-4 border-amber-500/20 flex items-center gap-3">
+          <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
+          <div>
+            <p className="text-sm text-amber-300 font-medium">SMTP not configured</p>
+            <p className="text-xs text-slate-400">Set VITE_SMTP_SEND_FUNCTION_URL to enable SMTP sending.</p>
           </div>
         </div>
       )}
@@ -1291,7 +1619,7 @@ function ManualComposeTab({
             {toEmails.length} recipient{toEmails.length !== 1 ? 's' : ''} · {remaining} sends remaining today
           </p>
           <button onClick={handleSend}
-            disabled={!isConfigured || sending || toEmails.length === 0 || !subject.trim() || !body.trim() || remaining === 0}
+            disabled={(provider === 'resend' ? !isConfigured : !smtpSendService.isConfigured) || sending || toEmails.length === 0 || !subject.trim() || !body.trim() || remaining === 0}
             className={cn('btn gap-2', sending ? 'btn-secondary' : 'btn-primary')}>
             {sending ? (
               <><Loader2 className="w-4 h-4 animate-spin" /> Sending {sendProgress.sent}/{sendProgress.total}</>
@@ -1304,6 +1632,110 @@ function ManualComposeTab({
           <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
             <div className="h-full bg-gradient-to-r from-novalyte-500 to-novalyte-400 rounded-full transition-all duration-500"
               style={{ width: `${sendProgress.total ? (sendProgress.sent / sendProgress.total) * 100 : 0}%` }} />
+          </div>
+        )}
+      </div>
+      </div>
+
+      {/* AI Sidecar */}
+      <div className="glass-card p-5 space-y-4 h-fit lg:sticky lg:top-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Wand2 className="w-4 h-4 text-purple-400" />
+            <h3 className="text-sm font-semibold text-slate-200">Vertex AI Sidecar</h3>
+          </div>
+          <span className={cn(
+            'text-[10px] px-2 py-0.5 rounded-full border',
+            vertexAI.isConfigured ? 'bg-purple-500/10 text-purple-300 border-purple-500/20' : 'bg-red-500/10 text-red-300 border-red-500/20'
+          )}>
+            {vertexAI.isConfigured ? `Gemini (${vertexAI.provider})` : 'Not configured'}
+          </span>
+        </div>
+
+        <p className="text-[10px] text-slate-500">
+          Tell the AI what you want. It will draft a complete subject + email body using your uploaded context and (optionally) a CRM clinic profile.
+        </p>
+
+        <div className="space-y-2">
+          <label className="text-[10px] text-novalyte-400 uppercase tracking-wider font-medium">Use CRM Context (optional)</label>
+          <input
+            value={contextSearch}
+            onChange={e => { setContextSearch(e.target.value); setContextContactId(''); }}
+            placeholder="Search clinic or decision maker..."
+            className="w-full px-3 py-2 rounded-lg bg-white/[0.03] border border-white/[0.08] text-xs text-slate-200 placeholder:text-slate-600 outline-none focus:border-novalyte-500/30"
+          />
+          {contextCandidates.length > 0 && !contextContactId && (
+            <div className="rounded-lg border border-white/[0.06] bg-black/40 overflow-hidden">
+              {contextCandidates.map(c => (
+                <button
+                  key={c.id}
+                  onClick={() => { setContextContactId(c.id); setContextSearch(c.clinic.name); }}
+                  className="w-full text-left px-3 py-2 hover:bg-white/[0.04] border-b border-white/[0.04] last:border-0"
+                >
+                  <p className="text-xs text-slate-200 font-medium truncate">{c.clinic.name}</p>
+                  <p className="text-[10px] text-slate-500 truncate">{c.clinic.address.city}, {c.clinic.address.state}</p>
+                </button>
+              ))}
+            </div>
+          )}
+          {contextContactId && (
+            <div className="flex items-center justify-between text-[10px] text-slate-500">
+              <span>Context locked to: <span className="text-slate-300">{contextSearch}</span></span>
+              <button onClick={() => { setContextContactId(''); setContextSearch(''); }} className="text-slate-500 hover:text-red-400">Clear</button>
+            </div>
+          )}
+        </div>
+
+        <div>
+          <label className="text-[10px] text-novalyte-400 uppercase tracking-wider font-medium mb-1.5 block">Direction</label>
+          <textarea
+            value={aiDirection}
+            onChange={e => setAiDirection(e.target.value)}
+            placeholder="e.g. Mention we specialize in men's health, offer a free market report, ask for a 15-min call..."
+            rows={3}
+            className="w-full bg-white/[0.02] border border-white/[0.08] rounded-lg px-3 py-2 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-novalyte-500/40 resize-none"
+          />
+        </div>
+
+        <div>
+          <label className="text-[10px] text-novalyte-400 uppercase tracking-wider font-medium mb-1.5 block">Uploaded Data / Notes</label>
+          <textarea
+            value={aiContext}
+            onChange={e => setAiContext(e.target.value)}
+            placeholder="Paste any data you uploaded (pricing, offer, ICP, clinic list notes, etc.). The AI will use it."
+            rows={5}
+            className="w-full bg-white/[0.02] border border-white/[0.08] rounded-lg px-3 py-2 text-xs text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-novalyte-500/40 resize-y"
+          />
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            onClick={generateWithAI}
+            disabled={aiLoading}
+            className="btn btn-secondary gap-2 text-xs"
+          >
+            {aiLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
+            Draft Email
+          </button>
+          {aiSuggestion && (
+            <button
+              onClick={() => { setSubject(aiSuggestion.subject); setBody(aiSuggestion.body); toast.success('Applied AI draft to editor'); }}
+              className="btn btn-primary gap-2 text-xs"
+            >
+              <CheckCircle className="w-3.5 h-3.5" />
+              Apply
+            </button>
+          )}
+        </div>
+
+        {aiError && <p className="text-[10px] text-red-400">{aiError}</p>}
+
+        {aiSuggestion && (
+          <div className="rounded-xl bg-white/[0.02] border border-white/[0.06] p-3 space-y-2">
+            <p className="text-[10px] text-slate-500">Subject</p>
+            <p className="text-xs text-slate-200 font-medium">{aiSuggestion.subject}</p>
+            <p className="text-[10px] text-slate-500 mt-2">Body</p>
+            <pre className="text-[11px] text-slate-300 whitespace-pre-wrap leading-relaxed">{aiSuggestion.body}</pre>
           </div>
         )}
       </div>
@@ -1327,7 +1759,7 @@ const stepConfig: Record<SequenceStep, { label: string; color: string; bg: strin
   opted_out: { label: 'Opted Out', color: 'text-slate-500', bg: 'bg-white/5', icon: AlertCircle, day: 0 },
 };
 
-function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEmails: SentEmail[] }) {
+function SequencesTab({ contacts, sentEmails, provider, remaining }: { contacts: CRMContact[]; sentEmails: SentEmail[]; provider: 'resend' | 'smtp'; remaining: number }) {
   /* ─── 5-Day Sequence Types ─── */
   type SeqStatus = 'active' | 'paused' | 'stopped' | 'completed' | 'replied';
 
@@ -1375,6 +1807,7 @@ function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEm
   const [executing, setExecuting] = useState(false);
   const [execProgress, setExecProgress] = useState({ done: 0, total: 0 });
   const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'paused' | 'completed' | 'replied'>('all');
+  const [sequenceDirection, setSequenceDirection] = useState('');
 
   /* ─── Source detection helpers ─── */
   const getSource = (c: CRMContact): 'ai-engine' | 'discovery' | 'crm' => {
@@ -1456,8 +1889,9 @@ function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEm
       let changed = false;
       for (const [id, enrollment] of updated) {
         if (enrollment.status !== 'active') continue;
+        const contact = contacts.find(c => c.id === id);
+        const hasReply = Boolean(contact?.activities?.some(a => a.type === 'email_reply'));
         const contactEmails = sentEmails.filter(e => e.contactId === id);
-        const hasReply = contactEmails.some(e => e.lastEvent === 'opened' || e.lastEvent === 'clicked');
         const hasBounce = contactEmails.some(e => e.lastEvent === 'bounced');
         if (hasReply) {
           updated.set(id, { ...enrollment, status: 'replied' });
@@ -1469,7 +1903,7 @@ function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEm
       }
       return changed ? updated : prev;
     });
-  }, [sentEmails]);
+  }, [sentEmails, contacts]);
 
   // Auto-check replies when sentEmails change
   useMemo(() => { checkReplies(); }, [sentEmails]);
@@ -1496,6 +1930,13 @@ function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEm
     toast.success(`Enrolled ${count} clinic${count !== 1 ? 's' : ''} in 5-day sequence`);
   };
 
+  const handleEnrollStagedFromAI = () => {
+    const staged = stagedFromAI.slice(0, 200).map(c => c.id);
+    if (!staged.length) { toast('No staged AI Engine clinics found'); return; }
+    setEnrollSelected(new Set(staged));
+    setShowEnroll(true);
+  };
+
   /* ─── AI Generate all email steps for an enrollment ─── */
   const handleGenerateSteps = async (contactId: string) => {
     const contact = contacts.find(c => c.id === contactId);
@@ -1519,7 +1960,7 @@ function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEm
       try {
         const stepType = s.step === 'intro' ? 'intro' : s.step === 'follow_up' ? 'follow_up' : 'breakup';
         const prevEmails = sentEmails.filter(e => e.contactId === contactId);
-        const ai = await generatePersonalizedEmail(contact, stepType as any, prevEmails);
+        const ai = await generatePersonalizedEmail(contact, stepType as any, prevEmails, sequenceDirection || undefined);
         updatedSteps[idx] = {
           ...updatedSteps[idx], status: 'ready',
           subject: ai.subject, body: ai.plainText, html: ai.html,
@@ -1561,7 +2002,7 @@ function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEm
         const idx = updatedSteps.findIndex(us => us.day === s.day);
         try {
           const stepType = s.step === 'intro' ? 'intro' : s.step === 'follow_up' ? 'follow_up' : 'breakup';
-          const ai = await generatePersonalizedEmail(contact, stepType as any, sentEmails.filter(e => e.contactId === id));
+          const ai = await generatePersonalizedEmail(contact, stepType as any, sentEmails.filter(e => e.contactId === id), sequenceDirection || undefined);
           updatedSteps[idx] = { ...updatedSteps[idx], status: 'ready', subject: ai.subject, body: ai.plainText, html: ai.html };
         } catch { /* skip */ }
         doneCount++;
@@ -1619,11 +2060,24 @@ function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEm
     if (!email) { toast.error('No email for this contact'); return; }
 
     try {
-      const result = await resendService.sendAIPersonalized(
-        contact, email,
-        { subject: step.subject, html: step.html },
-        step.step === 'value_add' ? 'follow_up' : step.step as any
-      );
+      if (provider === 'resend' && !resendService.isConfigured) { toast.error('V-send (Resend) not configured'); return; }
+      if (provider === 'smtp' && !smtpSendService.isConfigured) { toast.error('SMTP not configured'); return; }
+
+      if (provider === 'smtp') {
+        await smtpSendService.sendAIPersonalized(
+          contact,
+          email,
+          { subject: step.subject, html: step.html, text: step.body },
+          step.step === 'value_add' ? 'follow_up' : step.step as any
+        );
+      } else {
+        await resendService.sendAIPersonalized(
+          contact,
+          email,
+          { subject: step.subject, html: step.html },
+          step.step === 'value_add' ? 'follow_up' : step.step as any
+        );
+      }
       const updatedSteps = [...enrollment.steps];
       updatedSteps[stepIdx] = { ...step, status: 'sent', executedAt: new Date() };
       setEnrollments(prev => {
@@ -1655,15 +2109,17 @@ function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEm
       }
     });
     if (ready.length === 0) { toast('No ready steps to execute'); return; }
+    if (remaining === 0) { toast.error('No sends remaining for selected provider today'); return; }
     setExecuting(true);
-    setExecProgress({ done: 0, total: ready.length });
-    for (let i = 0; i < ready.length; i++) {
-      await handleExecuteStep(ready[i].contactId, ready[i].day);
-      setExecProgress({ done: i + 1, total: ready.length });
-      if (i < ready.length - 1) await new Promise(r => setTimeout(r, 1200));
+    const toRun = ready.slice(0, remaining);
+    setExecProgress({ done: 0, total: toRun.length });
+    for (let i = 0; i < toRun.length; i++) {
+      await handleExecuteStep(toRun[i].contactId, toRun[i].day);
+      setExecProgress({ done: i + 1, total: toRun.length });
+      if (i < toRun.length - 1) await new Promise(r => setTimeout(r, 1200));
     }
     setExecuting(false);
-    toast.success(`Executed ${ready.length} sequence steps`);
+    toast.success(`Executed ${toRun.length} sequence steps`);
   };
 
   /* ─── Pause / Resume / Stop controls ─── */
@@ -1740,6 +2196,38 @@ function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEm
 
   return (
     <div className="space-y-4">
+      {/* AI Engine → Outreach handoff */}
+      {stagedFromAI.length > 0 && (
+        <div className="glass-card p-4 border border-novalyte-500/20 bg-novalyte-500/5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-novalyte-400" />
+              <div>
+                <p className="text-sm font-semibold text-slate-200">AI Engine Inbox</p>
+                <p className="text-xs text-slate-500">{stagedFromAI.length} clinics staged for drip sequence</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleEnrollStagedFromAI}
+                className="btn btn-primary gap-2 text-xs"
+                title="Enroll AI Engine staged clinics into the 5-day sequence"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Enroll Staged ({Math.min(stagedFromAI.length, 200)})
+              </button>
+              <button
+                onClick={() => setShowEnroll(true)}
+                className="btn btn-secondary gap-2 text-xs"
+              >
+                <Users className="w-3.5 h-3.5" />
+                Enroll Any
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ─── Sequence Blueprint ─── */}
       <div className="glass-card p-4">
         <div className="flex items-center gap-2 mb-3">
@@ -1793,6 +2281,16 @@ function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEm
 
       {/* ─── Controls Bar ─── */}
       <div className="flex flex-wrap items-center gap-2">
+        <div className="flex-1 min-w-[260px]">
+          <label className="text-[10px] text-novalyte-400 uppercase tracking-wider font-medium mb-1 block">AI Direction (used for Generate All)</label>
+          <textarea
+            value={sequenceDirection}
+            onChange={e => setSequenceDirection(e.target.value)}
+            placeholder="e.g. Emphasize men's health specialization, offer a free demand report, keep it short, ask for 15 minutes..."
+            rows={2}
+            className="w-full bg-white/[0.02] border border-white/[0.08] rounded-lg px-3 py-2 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-novalyte-500/40 resize-none"
+          />
+        </div>
         <button onClick={() => setShowEnroll(!showEnroll)}
           className={cn('btn gap-1.5 text-xs', showEnroll ? 'btn-primary' : 'btn-secondary')}>
           <Plus className="w-3.5 h-3.5" /> Import Prospects
@@ -1991,7 +2489,6 @@ function SequencesTab({ contacts, sentEmails }: { contacts: CRMContact[]; sentEm
             const isExpanded = expandedId === contact.id;
             const email = getContactEmail(contact) || '';
             const dm = contact.decisionMaker;
-            const currentStep = enrollment.steps.find(s => s.day === enrollment.currentDay);
             const statusColors: Record<string, string> = {
               active: 'text-novalyte-400 bg-novalyte-500/10',
               paused: 'text-amber-400 bg-amber-500/10',
@@ -2245,6 +2742,7 @@ function StreamTab({ emails, onRefresh, refreshing }: {
           <thead>
             <tr className="border-b border-white/[0.06]">
               <th className="text-left text-xs text-slate-500 font-medium px-4 py-3">Status</th>
+              <th className="text-left text-xs text-slate-500 font-medium px-4 py-3 hidden md:table-cell">Provider</th>
               <th className="text-left text-xs text-slate-500 font-medium px-4 py-3">Clinic</th>
               <th className="text-left text-xs text-slate-500 font-medium px-4 py-3 hidden sm:table-cell">To</th>
               <th className="text-left text-xs text-slate-500 font-medium px-4 py-3 hidden md:table-cell">Subject</th>
@@ -2256,6 +2754,7 @@ function StreamTab({ emails, onRefresh, refreshing }: {
             {sorted.map(em => {
               const ev = eventConfig[em.lastEvent] || eventConfig.sent;
               const EvIcon = ev.icon;
+              const provider = em.provider || 'resend';
               return (
                 <tr key={em.id} className="border-b border-white/[0.03] hover:bg-white/[0.02] transition-all">
                   <td className="px-4 py-3">
@@ -2265,6 +2764,16 @@ function StreamTab({ emails, onRefresh, refreshing }: {
                       </div>
                       <span className={cn('text-xs font-medium', ev.color)}>{ev.label}</span>
                     </div>
+                  </td>
+                  <td className="px-4 py-3 hidden md:table-cell">
+                    <span className={cn(
+                      'text-[10px] px-2 py-0.5 rounded-full border font-medium',
+                      provider === 'smtp'
+                        ? 'bg-blue-500/10 text-blue-300 border-blue-500/20'
+                        : 'bg-novalyte-500/20 text-novalyte-300 border-novalyte-500/30'
+                    )}>
+                      {provider === 'smtp' ? 'SMTP' : 'V-send'}
+                    </span>
                   </td>
                   <td className="px-4 py-3">
                     <p className="text-sm text-slate-200 font-medium">{em.clinicName}</p>

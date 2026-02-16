@@ -8,6 +8,7 @@ import {
   MarketZone, Clinic, CRMContact, KeywordTrend, DecisionMaker,
   Activity, VoiceCall, Campaign,
 } from '../types';
+import type { SentEmail } from './resendService';
 
 // ─── Helpers ───
 const iso = (d: Date | string | undefined | null) =>
@@ -44,6 +45,11 @@ function clinicToRow(c: Clinic) {
     rating: c.rating ?? null, review_count: c.reviewCount ?? null,
     manager_name: c.managerName || null, manager_email: c.managerEmail || null,
     owner_name: c.ownerName || null, owner_email: c.ownerEmail || null,
+    google_verify_status: c.googleVerifyStatus || null,
+    google_verify_official_website: c.googleVerifyOfficialWebsite || null,
+    google_verify_confirmed_email: c.googleVerifyConfirmedEmail || null,
+    google_verify_found_emails: c.googleVerifyFoundEmails || [],
+    google_verify_checked_at: c.googleVerifyCheckedAt || null,
     verification_status: c.verificationStatus || 'Ready',
     services: c.services || [],
     market_id: c.marketZone.id,
@@ -56,6 +62,19 @@ function isMissingVerificationStatusError(message?: string | null): boolean {
   return text.includes('verification_status') && text.includes('schema cache');
 }
 
+function isMissingClinicGoogleVerifyColumnsError(message?: string | null): boolean {
+  const text = (message || '').toLowerCase();
+  if (!text.includes('schema cache')) return false;
+  const cols = [
+    'google_verify_status',
+    'google_verify_official_website',
+    'google_verify_confirmed_email',
+    'google_verify_found_emails',
+    'google_verify_checked_at',
+  ];
+  return cols.some(c => text.includes(c));
+}
+
 function rowToClinic(r: any, market: MarketZone): Clinic {
   return {
     id: r.id, name: r.name, type: r.type,
@@ -66,6 +85,11 @@ function rowToClinic(r: any, market: MarketZone): Clinic {
     reviewCount: r.review_count ?? undefined,
     managerName: r.manager_name || undefined, managerEmail: r.manager_email || undefined,
     ownerName: r.owner_name || undefined, ownerEmail: r.owner_email || undefined,
+    googleVerifyStatus: r.google_verify_status || undefined,
+    googleVerifyOfficialWebsite: r.google_verify_official_website || undefined,
+    googleVerifyConfirmedEmail: r.google_verify_confirmed_email || undefined,
+    googleVerifyFoundEmails: r.google_verify_found_emails || undefined,
+    googleVerifyCheckedAt: r.google_verify_checked_at || undefined,
     enrichedContacts: r.enriched_contacts || undefined,
     verificationStatus: r.verification_status || 'Ready',
     services: r.services || [],
@@ -196,6 +220,47 @@ function rowToCall(r: any): VoiceCall {
   };
 }
 
+// ─── Sent email mappers (outreach tracking) ───
+function sentEmailToRow(e: SentEmail) {
+  return {
+    id: e.id,
+    contact_id: e.contactId || null,
+    to_email: e.to,
+    from_email: e.from,
+    subject: e.subject,
+    clinic_name: e.clinicName || null,
+    market: e.market || null,
+    sent_at: iso(e.sentAt),
+    last_event: e.lastEvent,
+    last_event_at: iso(e.lastEventAt),
+    open_count: e.openCount ?? 0,
+    click_count: e.clickCount ?? 0,
+    sequence_step: e.sequenceStep || null,
+    ai_generated: Boolean(e.aiGenerated),
+    provider: e.provider || 'resend',
+  };
+}
+
+function rowToSentEmail(r: any): SentEmail {
+  return {
+    id: String(r.id),
+    contactId: String(r.contact_id || ''),
+    to: String(r.to_email || ''),
+    from: String(r.from_email || ''),
+    subject: String(r.subject || ''),
+    clinicName: String(r.clinic_name || ''),
+    market: String(r.market || ''),
+    sentAt: new Date(r.sent_at),
+    lastEvent: r.last_event,
+    lastEventAt: new Date(r.last_event_at),
+    openCount: Number(r.open_count || 0),
+    clickCount: Number(r.click_count || 0),
+    sequenceStep: r.sequence_step || undefined,
+    aiGenerated: Boolean(r.ai_generated),
+    provider: (r.provider || 'resend') as any,
+  };
+}
+
 // ─── Campaign mappers ───
 function campaignToRow(c: Campaign) {
   return {
@@ -294,13 +359,17 @@ class SupabaseSyncService {
     }, {});
     await this.syncMarkets(Object.values(markets));
 
-    const rows = clinics.map(clinicToRow);
+    // Supabase upsert payload must not contain duplicate conflict keys in the same request.
+    // If a clinic appears more than once in-memory, last write wins.
+    const rowById = new Map<string, ReturnType<typeof clinicToRow>>();
+    for (const c of clinics) rowById.set(c.id, clinicToRow(c));
+    const rows = Array.from(rowById.values());
     // Batch upsert in chunks of 100
     for (let i = 0; i < rows.length; i += 100) {
       const chunk = rows.slice(i, i + 100);
       const { error } = await supabase.from('clinics').upsert(chunk, { onConflict: 'id' });
       if (!error) continue;
-      if (!isMissingVerificationStatusError(error.message)) {
+      if (!isMissingVerificationStatusError(error.message) && !isMissingClinicGoogleVerifyColumnsError(error.message)) {
         console.error('syncClinics error:', error.message);
         continue;
       }
@@ -308,6 +377,11 @@ class SupabaseSyncService {
       const legacyChunk = chunk.map(c => {
         const legacy = { ...c } as Record<string, unknown>;
         delete legacy.verification_status;
+        delete legacy.google_verify_status;
+        delete legacy.google_verify_official_website;
+        delete legacy.google_verify_confirmed_email;
+        delete legacy.google_verify_found_emails;
+        delete legacy.google_verify_checked_at;
         return legacy;
       });
       const { error: legacyError } = await supabase.from('clinics').upsert(legacyChunk, { onConflict: 'id' });
@@ -715,6 +789,55 @@ class SupabaseSyncService {
     return data.map(rowToCampaign);
   }
 
+  // ─── Sent Emails (Outreach tracking) ───
+  async syncSentEmails(emails: SentEmail[]): Promise<void> {
+    if (!this.ready || !supabase || !emails.length) return;
+    const rows = emails.map(sentEmailToRow);
+    for (let i = 0; i < rows.length; i += 200) {
+      const chunk = rows.slice(i, i + 200);
+      const { error } = await supabase.from('sent_emails').upsert(chunk, { onConflict: 'id' });
+      if (error) console.error('syncSentEmails error:', error.message);
+    }
+  }
+
+  async fetchSentEmails(): Promise<SentEmail[] | null> {
+    if (!this.ready || !supabase) return null;
+    let data: any[] = [];
+    try {
+      data = await this.fetchAllRows('sent_emails');
+    } catch {
+      return null;
+    }
+    if (!data.length) return null;
+    return data.map(rowToSentEmail);
+  }
+
+  async fetchSentEmailsSince(sinceIso: string): Promise<SentEmail[]> {
+    if (!this.ready || !supabase) return [];
+    const { data, error } = await supabase
+      .from('sent_emails')
+      .select('*')
+      .gt('last_event_at', sinceIso)
+      .order('last_event_at', { ascending: true });
+    if (error) return [];
+    return (data || []).map(rowToSentEmail);
+  }
+
+  async fetchEmailReplyActivitiesSince(sinceIso: string): Promise<{ contactId: string; activity: Activity }[]> {
+    if (!this.ready || !supabase) return [];
+    const { data, error } = await supabase
+      .from('activities')
+      .select('*')
+      .eq('type', 'email_reply')
+      .gt('timestamp', sinceIso)
+      .order('timestamp', { ascending: true });
+    if (error) return [];
+    return (data || []).map((r: any) => ({
+      contactId: String(r.contact_id),
+      activity: rowToActivity(r),
+    }));
+  }
+
   // ─── Full sync: push local → Supabase ───
   async pushAll(state: {
     markets: MarketZone[];
@@ -724,6 +847,7 @@ class SupabaseSyncService {
     activeCalls: VoiceCall[];
     callHistory: VoiceCall[];
     campaigns: Campaign[];
+    sentEmails?: SentEmail[];
   }): Promise<void> {
     if (!this.ready) return;
     console.log('Pushing all data to Supabase...');
@@ -733,6 +857,7 @@ class SupabaseSyncService {
     await this.syncContacts(state.contacts);
     await this.syncVoiceCalls([...state.activeCalls, ...state.callHistory]);
     await this.syncCampaigns(state.campaigns);
+    if (state.sentEmails?.length) await this.syncSentEmails(state.sentEmails);
     console.log('✓ Full push complete');
   }
 
@@ -745,6 +870,7 @@ class SupabaseSyncService {
     activeCalls: VoiceCall[];
     callHistory: VoiceCall[];
     campaigns: Campaign[];
+    sentEmails: SentEmail[];
   } | null> {
     if (!this.ready) return null;
     console.log('Pulling all data from Supabase...');
@@ -756,6 +882,7 @@ class SupabaseSyncService {
     const contacts = await this.fetchContacts(marketMap) || [];
     const calls = await this.fetchVoiceCalls();
     const campaigns = await this.fetchCampaigns() || [];
+    const sentEmails = await this.fetchSentEmails() || [];
 
     console.log(`✓ Pulled: ${markets.length} markets, ${clinics.length} clinics, ${contacts.length} contacts, ${keywordTrends.length} trends`);
     return {
@@ -763,6 +890,7 @@ class SupabaseSyncService {
       activeCalls: calls?.active || [],
       callHistory: calls?.history || [],
       campaigns,
+      sentEmails,
     };
   }
 
@@ -785,9 +913,23 @@ class SupabaseSyncService {
     if (!this.ready || !supabase) return;
     // Delete junction table first (foreign key constraint)
     await supabase.from('contact_keyword_matches').delete().neq('contact_id', '');
+    // Best-effort cleanup for outreach tracking (may not exist on older schemas)
+    await supabase.from('sent_emails').delete().neq('id', '').catch(() => {});
+    await supabase.from('email_replies').delete().neq('id', '').catch(() => {});
     const { error } = await supabase.from('contacts').delete().neq('id', '');
     if (error) console.error('deleteAllContacts error:', error.message);
     else console.log('✓ Cleared contacts from Supabase');
+  }
+
+  async deleteContact(contactId: string): Promise<void> {
+    if (!this.ready || !supabase) return;
+    // Best-effort cleanup order to avoid FK errors on stricter schemas.
+    await supabase.from('activities').delete().eq('contact_id', contactId).catch(() => {});
+    await supabase.from('contact_keyword_matches').delete().eq('contact_id', contactId).catch(() => {});
+    await supabase.from('email_replies').delete().eq('contact_id', contactId).catch(() => {});
+    await supabase.from('sent_emails').delete().eq('contact_id', contactId).catch(() => {});
+    const { error } = await supabase.from('contacts').delete().eq('id', contactId);
+    if (error) console.error('deleteContact error:', error.message);
   }
 
   async deleteAllCalls(): Promise<void> {

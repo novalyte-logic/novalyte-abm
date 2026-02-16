@@ -15,6 +15,8 @@ interface ImportMetaEnv {
   readonly VITE_VAPI_PHONE_NUMBER: string;
   readonly VITE_VAPI_ASSISTANT_ID: string;
   readonly VITE_BLAND_AI_API_KEY: string;
+  readonly VITE_GOOGLE_VERIFY_FUNCTION_URL: string;
+  readonly VITE_SMTP_SEND_FUNCTION_URL: string;
   // Google Cloud / Vertex AI
   readonly VITE_GCP_PROJECT_ID: string;
   readonly VITE_GCP_LOCATION: string;
