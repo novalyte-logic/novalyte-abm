@@ -371,7 +371,7 @@ function CRM() {
 
   const handleGoogleVerify = useCallback(async (contact: CRMContact) => {
     if (!googleVerifyService.isConfigured) {
-      toast.error('Google verify is not configured (VITE_GOOGLE_VERIFY_FUNCTION_URL)');
+      toast.error('Google verify is not configured');
       return;
     }
     toast.loading('Verifying with Google...', { id: `gverify-${contact.id}` });
@@ -1119,7 +1119,7 @@ function CRM() {
                           <button
                             onClick={() => handleGoogleVerify(selectedContact)}
                             className="inline-flex items-center gap-1 text-[10px] text-novalyte-400 hover:underline"
-                            title={googleVerifyService.isConfigured ? 'Verify with Google' : 'Set VITE_GOOGLE_VERIFY_FUNCTION_URL'}
+                            title={googleVerifyService.isConfigured ? 'Verify with Google' : 'Google verify unavailable'}
                           >
                             <CheckCircle2 className="w-3 h-3" />
                             Verify with Google

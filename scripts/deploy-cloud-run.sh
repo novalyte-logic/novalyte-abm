@@ -55,6 +55,8 @@ escape_subst_value() {
   # Escape backslash first, then commas (Cloud Build substitutions delimiter).
   v="${v//\\/\\\\}"
   v="${v//,/\\,}"
+  # Escape equals (Cloud Build uses KEY=VALUE pairs).
+  v="${v//=/\\=}"
   # Remove newlines
   v="${v//$'\n'/}"
   echo -n "${v}"
@@ -89,6 +91,11 @@ keys=(
 substitutions=""
 for k in "${keys[@]}"; do
   raw="$(read_env_var "${k}")"
+  # gcloud --substitutions is extremely strict; values with lists (commas/brackets) often break parsing.
+  # The app can run fine with the single-key variant.
+  if [ "${k}" = "VITE_APOLLO_API_KEYS" ]; then
+    raw=""
+  fi
   esc="$(escape_subst_value "${raw}")"
   # Cloud Build requires user-defined substitutions to start with underscore.
   pair="_${k}=${esc}"
@@ -105,4 +112,3 @@ gcloud builds submit \
   --region="${REGION}" \
   --config=cloudbuild.yaml \
   --substitutions="${substitutions}"
-

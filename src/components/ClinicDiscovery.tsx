@@ -234,7 +234,7 @@ function ClinicDiscovery() {
 
   const handleGoogleVerifyClinic = async (clinic: Clinic) => {
     if (!googleVerifyService.isConfigured) {
-      toast.error('Google verify is not configured (VITE_GOOGLE_VERIFY_FUNCTION_URL)');
+      toast.error('Google verify is not configured');
       return;
     }
     setIsGoogleVerifying(true);
@@ -808,7 +808,7 @@ function ClinicDiscovery() {
                     onClick={() => handleGoogleVerifyClinic(selectedClinic)}
                     disabled={isGoogleVerifying}
                     className="text-xs text-novalyte-400 hover:underline flex items-center gap-1 disabled:opacity-50"
-                    title={googleVerifyService.isConfigured ? 'Verify with Google' : 'Set VITE_GOOGLE_VERIFY_FUNCTION_URL'}
+                    title={googleVerifyService.isConfigured ? 'Verify with Google' : 'Google verify unavailable'}
                   >
                     <CheckCircle2 className={cn('w-3 h-3', isGoogleVerifying && 'animate-pulse')} />
                     Verify with Google

@@ -535,7 +535,7 @@ function ComposeTab({
   const handleGoogleVerifySelected = async () => {
     if (googleVerifying || selectedContacts.length === 0) return;
     if (!googleVerifyService.isConfigured) {
-      toast.error('Google verify is not configured (VITE_GOOGLE_VERIFY_FUNCTION_URL)');
+      toast.error('Google verify is not configured');
       return;
     }
     setGoogleVerifying(true);
@@ -924,7 +924,7 @@ function ComposeTab({
               )}
               <button onClick={handleGoogleVerifySelected} disabled={googleVerifying || selectedIds.size === 0}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium bg-sky-500/10 text-sky-400 border border-sky-500/20 hover:bg-sky-500/20 transition-colors disabled:opacity-50"
-                title={googleVerifyService.isConfigured ? 'Verify official website + confirmed email' : 'Set VITE_GOOGLE_VERIFY_FUNCTION_URL'}
+                title={googleVerifyService.isConfigured ? 'Verify official website + confirmed email' : 'Google verify unavailable'}
               >
                 {googleVerifying ? (
                   <><Loader2 className="w-3 h-3 animate-spin" /> Google {googleVerifyProgress.done}/{googleVerifyProgress.total}</>

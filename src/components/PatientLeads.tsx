@@ -101,7 +101,7 @@ function ClinicFinderPanel({ lead, onAssign, onClose }: {
   const handleGoogleVerifyClinic = async () => {
     if (!selectedClinic) return;
     if (!googleVerifyService.isConfigured) {
-      toast.error('Google verify is not configured (VITE_GOOGLE_VERIFY_FUNCTION_URL)');
+      toast.error('Google verify is not configured');
       return;
     }
     setGoogleVerifying(true);
@@ -242,7 +242,7 @@ function ClinicFinderPanel({ lead, onAssign, onClose }: {
               onClick={handleGoogleVerifyClinic}
               disabled={googleVerifying}
               className="text-[10px] text-novalyte-400 hover:text-novalyte-300 underline disabled:opacity-50"
-              title={googleVerifyService.isConfigured ? 'Verify clinic website + confirmed email' : 'Set VITE_GOOGLE_VERIFY_FUNCTION_URL'}
+              title={googleVerifyService.isConfigured ? 'Verify clinic website + confirmed email' : 'Google verify unavailable'}
             >
               {googleVerifying ? 'Verifying...' : 'Verify with Google'}
             </button>

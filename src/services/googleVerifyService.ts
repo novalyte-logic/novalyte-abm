@@ -31,7 +31,8 @@ const getEnv = (key: string): string => {
  * Calls the Google Cloud Function `googleVerifyHandler`.
  *
  * Configure with:
- * - VITE_GOOGLE_VERIFY_FUNCTION_URL=https://REGION-PROJECT.cloudfunctions.net/googleVerifyHandler
+ * - Preferred: Supabase Edge Function `google-verify` (no extra env vars required beyond Supabase)
+ * - Optional fallback: VITE_GOOGLE_VERIFY_FUNCTION_URL=https://REGION-PROJECT.cloudfunctions.net/googleVerifyHandler
  */
 export class GoogleVerifyService {
   private baseUrl: string;
@@ -65,7 +66,7 @@ export class GoogleVerifyService {
     }
 
     // Fallback: legacy GCP function URL
-    if (!this.baseUrl) throw new Error('Google verify is not configured (Supabase or VITE_GOOGLE_VERIFY_FUNCTION_URL)');
+    if (!this.baseUrl) throw new Error('Google verify is not configured (Supabase not configured and no fallback URL set)');
     const resp = await axios.post(this.baseUrl, { action: 'verify_clinic', clinic, leadEmail: leadEmail || null }, { timeout: 30000 });
     if (!resp.data?.ok) throw new Error(resp.data?.error || 'Verify clinic failed');
     return {
@@ -88,7 +89,7 @@ export class GoogleVerifyService {
       if (!data?.ok) throw new Error(data?.error || 'Verify email failed');
       return data.result as VerifyEmailResult;
     }
-    if (!this.baseUrl) throw new Error('Google verify is not configured (Supabase or VITE_GOOGLE_VERIFY_FUNCTION_URL)');
+    if (!this.baseUrl) throw new Error('Google verify is not configured (Supabase not configured and no fallback URL set)');
     const resp = await axios.post(this.baseUrl, { action: 'verify_email', email }, { timeout: 20000 });
     if (!resp.data?.ok) throw new Error(resp.data?.error || 'Verify email failed');
     return resp.data.result as VerifyEmailResult;

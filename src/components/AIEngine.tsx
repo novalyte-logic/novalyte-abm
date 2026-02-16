@@ -1368,7 +1368,7 @@ export default function AIEngine() {
   const verifyWithGoogleBeforeOutreach = async () => {
     if (googleVerifying) return;
     if (!googleVerifyService.isConfigured) {
-      toast.error('Google verify is not configured (VITE_GOOGLE_VERIFY_FUNCTION_URL)');
+      toast.error('Google verify is not configured');
       return;
     }
 
